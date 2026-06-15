@@ -4,6 +4,13 @@ import { eq, and, ne } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { logger } from "../lib/logger";
 
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled rejection");
+});
+
 const token = process.env.TELEGRAM_BOT_TOKEN!;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
 
@@ -35,8 +42,6 @@ async function getChannels(): Promise<{ username: string; url: string }[]> {
 }
 
 async function getOrCreateUser(from: TelegramBot.User): Promise<typeof botUsers.$inferSelect> {
-  const ex = await db.select().from(botUsers).where(eq(botUsers.telegramId, from.id)).limit(1);
-  if (ex.length > 0) return ex[0];
   const linkToken = generateToken();
   const [u] = await db.insert(botUsers).values({
     telegramId: from.id,
@@ -44,6 +49,13 @@ async function getOrCreateUser(from: TelegramBot.User): Promise<typeof botUsers.
     firstName: from.first_name ?? null,
     lastName: from.last_name ?? null,
     linkToken,
+  }).onConflictDoUpdate({
+    target: botUsers.telegramId,
+    set: {
+      username: from.username ?? null,
+      firstName: from.first_name ?? null,
+      lastName: from.last_name ?? null,
+    },
   }).returning();
   return u;
 }
@@ -162,6 +174,7 @@ async function doBroadcast(adminChatId: number, text: string) {
 // =================== /start ===================
 bot.onText(/\/start(.*)/, async (msg, match) => {
   if (!msg.from) return;
+  try {
   const param = match?.[1]?.trim() ?? "";
   const chatId = msg.chat.id;
   const user = await getOrCreateUser(msg.from);
@@ -187,28 +200,35 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   if (!u.gender) { await askGender(chatId); return; }
 
   await bot.sendMessage(chatId, "ربات برای شما فعال شد.\n\nچه کاری برات انجام بدم؟", mainMenu());
+  } catch (err) { logger.error({ err }, "/start handler error"); }
 });
 
 // =================== /link & /banner ===================
 bot.onText(/\/link/, async (msg) => {
   if (!msg.from) return;
+  try {
   const u = await getOrCreateUser(msg.from);
   if (!await checkMembership(msg.from.id)) { await sendForceJoin(msg.chat.id); return; }
   if (!u.gender) { await askGender(msg.chat.id); return; }
   await sendBanner(msg.chat.id, u.linkToken, u.coins);
+  } catch (err) { logger.error({ err }, "/link handler error"); }
 });
 
 bot.onText(/\/banner/, async (msg) => {
   if (!msg.from) return;
+  try {
   const u = await getOrCreateUser(msg.from);
   if (!await checkMembership(msg.from.id)) { await sendForceJoin(msg.chat.id); return; }
   if (!u.gender) { await askGender(msg.chat.id); return; }
   await sendBanner(msg.chat.id, u.linkToken, u.coins);
+  } catch (err) { logger.error({ err }, "/banner handler error"); }
 });
 
 // =================== /admin ===================
 bot.onText(/\/admin/, async (msg) => {
-  if (!msg.from || !await isAdmin(msg.from.id, msg.from.username)) {
+  if (!msg.from) return;
+  try {
+  if (!await isAdmin(msg.from.id, msg.from.username)) {
     await bot.sendMessage(msg.chat.id, "❌ دسترسی ندارید."); return;
   }
   const all = await db.select().from(botUsers);
@@ -227,20 +247,23 @@ bot.onText(/\/admin/, async (msg) => {
       },
     }
   );
+  } catch (err) { logger.error({ err }, "/admin handler error"); }
 });
 
 // =================== /broadcast ===================
 bot.onText(/\/broadcast (.+)/, async (msg, match) => {
   if (!msg.from || !await isAdmin(msg.from.id, msg.from.username)) return;
+  try {
   const text = match?.[1]; if (!text) return;
   await doBroadcast(msg.chat.id, text);
+  } catch (err) { logger.error({ err }, "/broadcast handler error"); }
 });
 
 // =================== Main message handler ===================
 bot.on("message", async (msg) => {
   if (!msg.from) return;
   if (msg.text?.startsWith("/")) return;
-
+  try {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const text = msg.text ?? "";
@@ -607,6 +630,7 @@ bot.on("message", async (msg) => {
   if (text) {
     await bot.sendMessage(chatId, "حله!\nچه کاری برات انجام بدم؟", mainMenu());
   }
+  } catch (err) { logger.error({ err }, "message handler error"); }
 });
 
 // =================== Find partner helper ===================
@@ -628,6 +652,7 @@ async function findPartner(userId: number, pref: string, userGender: string) {
 // =================== Callbacks ===================
 bot.on("callback_query", async (query) => {
   if (!query.data || !query.from) return;
+  try {
   const chatId = query.message!.chat.id;
   const userId = query.from.id;
   await bot.answerCallbackQuery(query.id);
@@ -849,6 +874,7 @@ bot.on("callback_query", async (query) => {
     );
     return;
   }
+  } catch (err) { logger.error({ err }, "callback_query handler error"); }
 });
 
 // =================== Webhook Setup ===================
