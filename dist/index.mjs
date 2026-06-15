@@ -96004,6 +96004,10 @@ bot.on("callback_query", async (query) => {
               { text: "\u{1F4E2} \u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F", callback_data: `report_do:${blockToken}:${reportedId}:\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F` }
             ],
             [
+              { text: "\u{1F612} \u0628\u0627\u0647\u0627\u0634 \u062D\u0627\u0644 \u0646\u06A9\u0631\u062F\u0645", callback_data: `report_do:${blockToken}:${reportedId}:\u0628\u0627\u0647\u0627\u0634 \u062D\u0627\u0644 \u0646\u06A9\u0631\u062F\u0645` },
+              { text: "\u{1F51E} \u0645\u062D\u062A\u0648\u0627\u06CC \u0646\u0627\u0645\u0646\u0627\u0633\u0628", callback_data: `report_do:${blockToken}:${reportedId}:\u0645\u062D\u062A\u0648\u0627\u06CC \u0646\u0627\u0645\u0646\u0627\u0633\u0628` }
+            ],
+            [
               { text: "\u274C \u0627\u0646\u0635\u0631\u0627\u0641", callback_data: "report_cancel" }
             ]
           ]
