@@ -757,6 +757,10 @@ bot.on("callback_query", async (query) => {
             { text: "📢 تبلیغ فرستاد", callback_data: `report_do:${blockToken}:${reportedId}:تبلیغ فرستاد` },
           ],
           [
+            { text: "😒 باهاش حال نکردم", callback_data: `report_do:${blockToken}:${reportedId}:باهاش حال نکردم` },
+            { text: "🔞 محتوای نامناسب", callback_data: `report_do:${blockToken}:${reportedId}:محتوای نامناسب` },
+          ],
+          [
             { text: "❌ انصراف", callback_data: "report_cancel" },
           ],
         ],
