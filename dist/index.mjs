@@ -95764,30 +95764,9 @@ ${link}`,
       await bot.sendMessage(chatId, "\u062D\u0644\u0647!\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
       return;
     }
-    if (["\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F", "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F", "\u0627\u0646\u0635\u0631\u0627\u0641"].includes(text2) && user.state === "report_reason") {
-      const stateData = user.stateData ?? "";
-      const [reportedToken] = stateData.split(":");
+    if (user.state === "report_reason") {
       await setUserState(userId, "idle");
-      if (text2 === "\u0627\u0646\u0635\u0631\u0627\u0641") {
-        await bot.sendMessage(chatId, "\u0628\u0627\u0634\u0647! \u{1F44C}", mainMenu());
-        return;
-      }
-      const reason = text2;
-      const reportedUser = await getUserByToken(reportedToken);
-      await db.insert(reports).values({ reporterTelegramId: userId, reportedToken, reason });
-      if (reportedUser) {
-        try {
-          await bot.sendMessage(
-            reportedUser.telegramId,
-            `\u26A0\uFE0F *\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 \u0633\u06CC\u0633\u062A\u0645:*
-\u0634\u0645\u0627 \u062A\u0648\u0633\u0637 \u06CC\u06A9\u06CC \u0627\u0632 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u06AF\u0632\u0627\u0631\u0634 \u0634\u062F\u06CC\u062F.
-\u{1F4CC} \u062F\u0644\u06CC\u0644: *${reason}*`,
-            { parse_mode: "Markdown" }
-          );
-        } catch {
-        }
-      }
-      await bot.sendMessage(chatId, "\u2705 \u06AF\u0632\u0627\u0631\u0634 \u062B\u0628\u062A \u0634\u062F.", mainMenu());
+      await bot.sendMessage(chatId, "\u0644\u0637\u0641\u0627\u064B \u0627\u0632 \u062F\u06A9\u0645\u0647\u200C\u0647\u0627\u06CC \u06AF\u0632\u06CC\u0646\u0647 \u06AF\u0632\u0627\u0631\u0634 \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u06A9\u0646\u06CC\u062F.", mainMenu());
       return;
     }
     const active = await getActiveRandomChat(userId);
@@ -96009,23 +95988,73 @@ bot.on("callback_query", async (query) => {
     }
     if (query.data.startsWith("report_ask:")) {
       const parts = query.data.split(":");
-      const blockToken = parts[1];
-      const reportedId = parseInt(parts[2] ?? "0");
-      await setUserState(userId, "report_reason", `${blockToken}:${reportedId}`);
-      await bot.sendMessage(
-        chatId,
-        "\u{1F6A8} \u062F\u0644\u06CC\u0644 \u06AF\u0632\u0627\u0631\u0634 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:",
+      const blockToken = parts[1] ?? "";
+      const reportedId = parts[2] ?? "0";
+      const existing = await db.select({ id: reports.id }).from(reports).where(and(eq(reports.reporterTelegramId, userId), eq(reports.reportedToken, blockToken))).limit(1);
+      if (existing.length > 0) {
+        await bot.answerCallbackQuery(query.id, { text: "\u26A0\uFE0F \u0642\u0628\u0644\u0627\u064B \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0631\u0627 \u06AF\u0632\u0627\u0631\u0634 \u062F\u0627\u062F\u0647\u200C\u0627\u06CC\u062F!", show_alert: true });
+        return;
+      }
+      await bot.answerCallbackQuery(query.id);
+      await bot.editMessageReplyMarkup(
         {
-          reply_markup: {
-            keyboard: [
-              [{ text: "\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F" }, { text: "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F" }],
-              [{ text: "\u0627\u0646\u0635\u0631\u0627\u0641" }]
+          inline_keyboard: [
+            [
+              { text: "\u{1F624} \u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F", callback_data: `report_do:${blockToken}:${reportedId}:\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F` },
+              { text: "\u{1F4E2} \u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F", callback_data: `report_do:${blockToken}:${reportedId}:\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F` }
             ],
-            resize_keyboard: true,
-            one_time_keyboard: true
-          }
-        }
+            [
+              { text: "\u274C \u0627\u0646\u0635\u0631\u0627\u0641", callback_data: "report_cancel" }
+            ]
+          ]
+        },
+        { chat_id: chatId, message_id: query.message?.message_id }
       );
+      return;
+    }
+    if (query.data.startsWith("report_do:")) {
+      const parts = query.data.split(":");
+      const blockToken = parts[1] ?? "";
+      const reportedId = parseInt(parts[2] ?? "0");
+      const reason = parts.slice(3).join(":");
+      const existing = await db.select({ id: reports.id }).from(reports).where(and(eq(reports.reporterTelegramId, userId), eq(reports.reportedToken, blockToken))).limit(1);
+      if (existing.length > 0) {
+        await bot.answerCallbackQuery(query.id, { text: "\u26A0\uFE0F \u0642\u0628\u0644\u0627\u064B \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0631\u0627 \u06AF\u0632\u0627\u0631\u0634 \u062F\u0627\u062F\u0647\u200C\u0627\u06CC\u062F!", show_alert: true });
+        return;
+      }
+      await db.insert(reports).values({ reporterTelegramId: userId, reportedToken: blockToken, reason });
+      const reportedUser = reportedId ? await db.select().from(botUsers).where(eq(botUsers.telegramId, reportedId)).limit(1).then((r) => r[0]) : null;
+      if (reportedUser) {
+        try {
+          await bot.sendMessage(
+            reportedUser.telegramId,
+            `\u26A0\uFE0F *\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 \u0633\u06CC\u0633\u062A\u0645:*
+\u0634\u0645\u0627 \u062A\u0648\u0633\u0637 \u06CC\u06A9\u06CC \u0627\u0632 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u06AF\u0632\u0627\u0631\u0634 \u0634\u062F\u06CC\u062F.
+\u{1F4CC} \u062F\u0644\u06CC\u0644: *${reason}*`,
+            { parse_mode: "Markdown" }
+          );
+        } catch {
+        }
+      }
+      await bot.answerCallbackQuery(query.id, { text: "\u2705 \u06AF\u0632\u0627\u0631\u0634 \u062B\u0628\u062A \u0634\u062F!" });
+      try {
+        await bot.editMessageText("\u2705 \u06AF\u0632\u0627\u0631\u0634 \u0634\u0645\u0627 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u062B\u0628\u062A \u0634\u062F.", {
+          chat_id: chatId,
+          message_id: query.message?.message_id
+        });
+      } catch {
+      }
+      return;
+    }
+    if (query.data === "report_cancel") {
+      await bot.answerCallbackQuery(query.id, { text: "\u06AF\u0632\u0627\u0631\u0634 \u0644\u063A\u0648 \u0634\u062F." });
+      try {
+        await bot.editMessageText("\u274C \u06AF\u0632\u0627\u0631\u0634 \u0644\u063A\u0648 \u0634\u062F.", {
+          chat_id: chatId,
+          message_id: query.message?.message_id
+        });
+      } catch {
+      }
       return;
     }
     if (query.data.startsWith("reply:")) {
