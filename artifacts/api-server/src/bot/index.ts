@@ -499,27 +499,10 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // ========== دلیل گزارش از keyboard ==========
-  if (["بی ادب بود", "تبلیغ فرستاد", "انصراف"].includes(text) && user.state === "report_reason") {
-    const stateData = user.stateData ?? "";
-    const [reportedToken] = stateData.split(":");
+  // ========== دلیل گزارش (حالت قدیمی text — دیگه استفاده نمی‌شه، فقط fallback) ==========
+  if (user.state === "report_reason") {
     await setUserState(userId, "idle");
-    if (text === "انصراف") {
-      await bot.sendMessage(chatId, "باشه! 👌", mainMenu());
-      return;
-    }
-    const reason = text;
-    const reportedUser = await getUserByToken(reportedToken);
-    await db.insert(reports).values({ reporterTelegramId: userId, reportedToken, reason });
-    if (reportedUser) {
-      try {
-        await bot.sendMessage(reportedUser.telegramId,
-          `⚠️ *اطلاعیه سیستم:*\nشما توسط یکی از کاربران گزارش شدید.\n📌 دلیل: *${reason}*`,
-          { parse_mode: "Markdown" }
-        );
-      } catch { /**/ }
-    }
-    await bot.sendMessage(chatId, "✅ گزارش ثبت شد.", mainMenu());
+    await bot.sendMessage(chatId, "لطفاً از دکمه‌های گزینه گزارش استفاده کنید.", mainMenu());
     return;
   }
 
@@ -752,21 +735,85 @@ bot.on("callback_query", async (query) => {
   // ===== گزارش از طرف کسی که چت قطع شد =====
   if (query.data.startsWith("report_ask:")) {
     const parts = query.data.split(":");
-    const blockToken = parts[1];
-    const reportedId = parseInt(parts[2] ?? "0");
-    await setUserState(userId, "report_reason", `${blockToken}:${reportedId}`);
-    await bot.sendMessage(chatId, "🚨 دلیل گزارش را انتخاب کنید:",
+    const blockToken = parts[1] ?? "";
+    const reportedId = parts[2] ?? "0";
+
+    // بررسی تکراری بودن گزارش
+    const existing = await db.select({ id: reports.id }).from(reports)
+      .where(and(eq(reports.reporterTelegramId, userId), eq(reports.reportedToken, blockToken)))
+      .limit(1);
+
+    if (existing.length > 0) {
+      await bot.answerCallbackQuery(query.id, { text: "⚠️ قبلاً این کاربر را گزارش داده‌اید!", show_alert: true });
+      return;
+    }
+
+    await bot.answerCallbackQuery(query.id);
+    await bot.editMessageReplyMarkup(
       {
-        reply_markup: {
-          keyboard: [
-            [{ text: "بی ادب بود" }, { text: "تبلیغ فرستاد" }],
-            [{ text: "انصراف" }],
+        inline_keyboard: [
+          [
+            { text: "😤 بی ادب بود", callback_data: `report_do:${blockToken}:${reportedId}:بی ادب بود` },
+            { text: "📢 تبلیغ فرستاد", callback_data: `report_do:${blockToken}:${reportedId}:تبلیغ فرستاد` },
           ],
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      }
+          [
+            { text: "❌ انصراف", callback_data: "report_cancel" },
+          ],
+        ],
+      },
+      { chat_id: chatId, message_id: query.message?.message_id }
     );
+    return;
+  }
+
+  // ===== ثبت دلیل گزارش (inline) =====
+  if (query.data.startsWith("report_do:")) {
+    const parts = query.data.split(":");
+    const blockToken = parts[1] ?? "";
+    const reportedId = parseInt(parts[2] ?? "0");
+    const reason = parts.slice(3).join(":");
+
+    // بررسی تکراری بودن
+    const existing = await db.select({ id: reports.id }).from(reports)
+      .where(and(eq(reports.reporterTelegramId, userId), eq(reports.reportedToken, blockToken)))
+      .limit(1);
+
+    if (existing.length > 0) {
+      await bot.answerCallbackQuery(query.id, { text: "⚠️ قبلاً این کاربر را گزارش داده‌اید!", show_alert: true });
+      return;
+    }
+
+    await db.insert(reports).values({ reporterTelegramId: userId, reportedToken: blockToken, reason });
+
+    const reportedUser = reportedId ? await db.select().from(botUsers).where(eq(botUsers.telegramId, reportedId)).limit(1).then(r => r[0]) : null;
+    if (reportedUser) {
+      try {
+        await bot.sendMessage(reportedUser.telegramId,
+          `⚠️ *اطلاعیه سیستم:*\nشما توسط یکی از کاربران گزارش شدید.\n📌 دلیل: *${reason}*`,
+          { parse_mode: "Markdown" }
+        );
+      } catch { /**/ }
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: "✅ گزارش ثبت شد!" });
+    try {
+      await bot.editMessageText("✅ گزارش شما با موفقیت ثبت شد.", {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+      });
+    } catch { /**/ }
+    return;
+  }
+
+  // ===== لغو گزارش =====
+  if (query.data === "report_cancel") {
+    await bot.answerCallbackQuery(query.id, { text: "گزارش لغو شد." });
+    try {
+      await bot.editMessageText("❌ گزارش لغو شد.", {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+      });
+    } catch { /**/ }
     return;
   }
 
