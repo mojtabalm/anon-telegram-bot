@@ -96142,6 +96142,14 @@ async function setupWebhook() {
     return;
   }
   try {
+    const info = await bot.getWebHookInfo();
+    if (info.url && info.url !== WEBHOOK_URL && info.url.includes("railway.app")) {
+      logger.info({ activeUrl: info.url, skipping: WEBHOOK_URL }, "Railway webhook active \u2014 skipping Replit override");
+      await bot.deleteWebHook();
+      await bot.startPolling();
+      logger.info("Started polling (Railway is primary webhook)");
+      return;
+    }
     await bot.setWebHook(WEBHOOK_URL);
     logger.info({ url: WEBHOOK_URL }, "Webhook set");
   } catch (err) {
