@@ -95202,6 +95202,12 @@ var logger = (0, import_pino.default)({
 });
 
 // src/bot/index.ts
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled rejection");
+});
 var token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
 var ADMIN_ID = parseInt(process.env.ADMIN_TELEGRAM_ID ?? "8426046895");
@@ -95226,8 +95232,6 @@ async function getChannels() {
   return DEFAULT_CHANNELS;
 }
 async function getOrCreateUser(from) {
-  const ex = await db.select().from(botUsers).where(eq(botUsers.telegramId, from.id)).limit(1);
-  if (ex.length > 0) return ex[0];
   const linkToken = generateToken();
   const [u] = await db.insert(botUsers).values({
     telegramId: from.id,
@@ -95235,6 +95239,13 @@ async function getOrCreateUser(from) {
     firstName: from.first_name ?? null,
     lastName: from.last_name ?? null,
     linkToken
+  }).onConflictDoUpdate({
+    target: botUsers.telegramId,
+    set: {
+      username: from.username ?? null,
+      firstName: from.first_name ?? null,
+      lastName: from.last_name ?? null
+    }
   }).returning();
   return u;
 }
@@ -95370,251 +95381,273 @@ ${text2}`, { parse_mode: "Markdown" });
 }
 bot.onText(/\/start(.*)/, async (msg, match) => {
   if (!msg.from) return;
-  const param = match?.[1]?.trim() ?? "";
-  const chatId = msg.chat.id;
-  const user = await getOrCreateUser(msg.from);
-  if (param.length > 0) {
-    const referrer = await getUserByToken(param);
-    if (referrer && referrer.telegramId !== msg.from.id && !user.referredBy) {
-      await db.update(botUsers).set({ referredBy: referrer.telegramId }).where(eq(botUsers.telegramId, msg.from.id));
-      const isMem = await checkMembership(msg.from.id);
-      if (isMem) {
-        await db.update(botUsers).set({ coins: referrer.coins + REFERRAL_COINS }).where(eq(botUsers.telegramId, referrer.telegramId));
-        try {
-          await bot.sendMessage(referrer.telegramId, `\u{1F389} \u06CC\u0647 \u0646\u0641\u0631 \u0627\u0632 \u0637\u0631\u06CC\u0642 \u0644\u06CC\u0646\u06A9 \u062F\u0639\u0648\u062A \u062A\u0648 \u0648\u0627\u0631\u062F \u0634\u062F!
+  try {
+    const param = match?.[1]?.trim() ?? "";
+    const chatId = msg.chat.id;
+    const user = await getOrCreateUser(msg.from);
+    if (param.length > 0) {
+      const referrer = await getUserByToken(param);
+      if (referrer && referrer.telegramId !== msg.from.id && !user.referredBy) {
+        await db.update(botUsers).set({ referredBy: referrer.telegramId }).where(eq(botUsers.telegramId, msg.from.id));
+        const isMem = await checkMembership(msg.from.id);
+        if (isMem) {
+          await db.update(botUsers).set({ coins: referrer.coins + REFERRAL_COINS }).where(eq(botUsers.telegramId, referrer.telegramId));
+          try {
+            await bot.sendMessage(referrer.telegramId, `\u{1F389} \u06CC\u0647 \u0646\u0641\u0631 \u0627\u0632 \u0637\u0631\u06CC\u0642 \u0644\u06CC\u0646\u06A9 \u062F\u0639\u0648\u062A \u062A\u0648 \u0648\u0627\u0631\u062F \u0634\u062F!
 \u{1FA99} ${REFERRAL_COINS} \u0633\u06A9\u0647 \u0628\u0647 \u062D\u0633\u0627\u0628\u062A \u0627\u0636\u0627\u0641\u0647 \u0634\u062F!`);
-        } catch {
+          } catch {
+          }
         }
       }
     }
-  }
-  const isMember = await checkMembership(msg.from.id);
-  if (!isMember) {
-    await sendForceJoin(chatId);
-    return;
-  }
-  const u = await freshUser(msg.from.id);
-  if (!u) return;
-  if (!u.gender) {
-    await askGender(chatId);
-    return;
-  }
-  await bot.sendMessage(chatId, "\u0631\u0628\u0627\u062A \u0628\u0631\u0627\u06CC \u0634\u0645\u0627 \u0641\u0639\u0627\u0644 \u0634\u062F.\n\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
-});
-bot.onText(/\/link/, async (msg) => {
-  if (!msg.from) return;
-  const u = await getOrCreateUser(msg.from);
-  if (!await checkMembership(msg.from.id)) {
-    await sendForceJoin(msg.chat.id);
-    return;
-  }
-  if (!u.gender) {
-    await askGender(msg.chat.id);
-    return;
-  }
-  await sendBanner(msg.chat.id, u.linkToken, u.coins);
-});
-bot.onText(/\/banner/, async (msg) => {
-  if (!msg.from) return;
-  const u = await getOrCreateUser(msg.from);
-  if (!await checkMembership(msg.from.id)) {
-    await sendForceJoin(msg.chat.id);
-    return;
-  }
-  if (!u.gender) {
-    await askGender(msg.chat.id);
-    return;
-  }
-  await sendBanner(msg.chat.id, u.linkToken, u.coins);
-});
-bot.onText(/\/admin/, async (msg) => {
-  if (!msg.from || !await isAdmin(msg.from.id, msg.from.username)) {
-    await bot.sendMessage(msg.chat.id, "\u274C \u062F\u0633\u062A\u0631\u0633\u06CC \u0646\u062F\u0627\u0631\u06CC\u062F.");
-    return;
-  }
-  const all = await db.select().from(botUsers);
-  const channels = await getChannels();
-  await bot.sendMessage(
-    msg.chat.id,
-    `\u2699\uFE0F *\u067E\u0646\u0644 \u0627\u062F\u0645\u06CC\u0646*
-
-\u{1F465} \u06A9\u0627\u0631\u0628\u0631\u0627\u0646: *${all.length}*
-\u{1F4E2} \u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC:
-${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "\u{1F4E2} \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC", callback_data: "admin_broadcast" }],
-          [{ text: "\u2795 \u0627\u0636\u0627\u0641\u0647 \u06A9\u0631\u062F\u0646 \u06A9\u0627\u0646\u0627\u0644 \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC", callback_data: "admin_add_channel" }],
-          [{ text: "\u2796 \u062D\u0630\u0641 \u06A9\u0627\u0646\u0627\u0644 \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC", callback_data: "admin_remove_channel" }],
-          [{ text: "\u{1F4CA} \u0622\u0645\u0627\u0631", callback_data: "admin_stats" }]
-        ]
-      }
-    }
-  );
-});
-bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-  if (!msg.from || !await isAdmin(msg.from.id, msg.from.username)) return;
-  const text2 = match?.[1];
-  if (!text2) return;
-  await doBroadcast(msg.chat.id, text2);
-});
-bot.on("message", async (msg) => {
-  if (!msg.from) return;
-  if (msg.text?.startsWith("/")) return;
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const text2 = msg.text ?? "";
-  const user = await getOrCreateUser(msg.from);
-  const isMember = await checkMembership(userId);
-  if (text2 === "\u{1FA9D} \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u0648\u0635\u0644\u0645 \u06A9\u0646!") {
+    const isMember = await checkMembership(msg.from.id);
     if (!isMember) {
       await sendForceJoin(chatId);
       return;
     }
-    if (!user.gender) {
+    const u = await freshUser(msg.from.id);
+    if (!u) return;
+    if (!u.gender) {
       await askGender(chatId);
       return;
     }
-    const active2 = await getActiveRandomChat(userId);
-    if (active2) {
-      await bot.sendMessage(chatId, "\u26A0\uFE0F \u0627\u0644\u0627\u0646 \u062F\u0631 \u06CC\u0647 \u06AF\u0641\u062A\u06AF\u0648 \u0647\u0633\u062A\u06CC!\n\u0628\u0631\u0627\u06CC \u0642\u0637\u0639 \u06A9\u0631\u062F\u0646 \u0628\u0646\u0648\u06CC\u0633: \u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647");
+    await bot.sendMessage(chatId, "\u0631\u0628\u0627\u062A \u0628\u0631\u0627\u06CC \u0634\u0645\u0627 \u0641\u0639\u0627\u0644 \u0634\u062F.\n\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
+  } catch (err) {
+    logger.error({ err }, "/start handler error");
+  }
+});
+bot.onText(/\/link/, async (msg) => {
+  if (!msg.from) return;
+  try {
+    const u = await getOrCreateUser(msg.from);
+    if (!await checkMembership(msg.from.id)) {
+      await sendForceJoin(msg.chat.id);
       return;
     }
-    await setUserState(userId, "waiting_random_pref");
+    if (!u.gender) {
+      await askGender(msg.chat.id);
+      return;
+    }
+    await sendBanner(msg.chat.id, u.linkToken, u.coins);
+  } catch (err) {
+    logger.error({ err }, "/link handler error");
+  }
+});
+bot.onText(/\/banner/, async (msg) => {
+  if (!msg.from) return;
+  try {
+    const u = await getOrCreateUser(msg.from);
+    if (!await checkMembership(msg.from.id)) {
+      await sendForceJoin(msg.chat.id);
+      return;
+    }
+    if (!u.gender) {
+      await askGender(msg.chat.id);
+      return;
+    }
+    await sendBanner(msg.chat.id, u.linkToken, u.coins);
+  } catch (err) {
+    logger.error({ err }, "/banner handler error");
+  }
+});
+bot.onText(/\/admin/, async (msg) => {
+  if (!msg.from) return;
+  try {
+    if (!await isAdmin(msg.from.id, msg.from.username)) {
+      await bot.sendMessage(msg.chat.id, "\u274C \u062F\u0633\u062A\u0631\u0633\u06CC \u0646\u062F\u0627\u0631\u06CC\u062F.");
+      return;
+    }
+    const all = await db.select().from(botUsers);
+    const channels = await getChannels();
     await bot.sendMessage(
-      chatId,
-      "\u0628\u0631\u0627\u062A \u0645\u0647\u0645\u0647 \u0645\u062E\u0627\u0637\u0628\u06CC\u062A \u067E\u0633\u0631 \u0628\u0627\u0634\u0647 \u06CC\u0627 \u062F\u062E\u062A\u0631\u061F\n\u0686\u062A \u0634\u0627\u0646\u0633\u06CC \u0631\u0627\u06CC\u06AF\u0627\u0646 \u0645\u06CC\u0628\u0627\u0634\u062F.",
+      msg.chat.id,
+      `\u2699\uFE0F *\u067E\u0646\u0644 \u0627\u062F\u0645\u06CC\u0646*
+
+\u{1F465} \u06A9\u0627\u0631\u0628\u0631\u0627\u0646: *${all.length}*
+\u{1F4E2} \u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC:
+${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`,
       {
+        parse_mode: "Markdown",
         reply_markup: {
-          keyboard: [
-            [{ text: "\u{1F466} \u067E\u0633\u0631 \u0628\u0627\u0634\u0647" }, { text: "\u{1F467} \u062F\u062E\u062A\u0631 \u0628\u0627\u0634\u0647" }],
-            [{ text: "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A" }]
-          ],
-          resize_keyboard: true,
-          one_time_keyboard: true
+          inline_keyboard: [
+            [{ text: "\u{1F4E2} \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC", callback_data: "admin_broadcast" }],
+            [{ text: "\u2795 \u0627\u0636\u0627\u0641\u0647 \u06A9\u0631\u062F\u0646 \u06A9\u0627\u0646\u0627\u0644 \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC", callback_data: "admin_add_channel" }],
+            [{ text: "\u2796 \u062D\u0630\u0641 \u06A9\u0627\u0646\u0627\u0644 \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC", callback_data: "admin_remove_channel" }],
+            [{ text: "\u{1F4CA} \u0622\u0645\u0627\u0631", callback_data: "admin_stats" }]
+          ]
         }
       }
     );
-    return;
+  } catch (err) {
+    logger.error({ err }, "/admin handler error");
   }
-  if (["\u{1F466} \u067E\u0633\u0631 \u0628\u0627\u0634\u0647", "\u{1F467} \u062F\u062E\u062A\u0631 \u0628\u0627\u0634\u0647", "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A"].includes(text2) && user.state === "waiting_random_pref") {
-    let pref = "any";
-    if (text2 === "\u{1F466} \u067E\u0633\u0631 \u0628\u0627\u0634\u0647") pref = "male";
-    else if (text2 === "\u{1F467} \u062F\u062E\u062A\u0631 \u0628\u0627\u0634\u0647") pref = "female";
-    const active2 = await getActiveRandomChat(userId);
-    if (active2) {
-      await bot.sendMessage(chatId, "\u26A0\uFE0F \u0627\u0644\u0627\u0646 \u062F\u0631 \u06CC\u0647 \u06AF\u0641\u062A\u06AF\u0648 \u0647\u0633\u062A\u06CC!");
+});
+bot.onText(/\/broadcast (.+)/, async (msg, match) => {
+  if (!msg.from || !await isAdmin(msg.from.id, msg.from.username)) return;
+  try {
+    const text2 = match?.[1];
+    if (!text2) return;
+    await doBroadcast(msg.chat.id, text2);
+  } catch (err) {
+    logger.error({ err }, "/broadcast handler error");
+  }
+});
+bot.on("message", async (msg) => {
+  if (!msg.from) return;
+  if (msg.text?.startsWith("/")) return;
+  try {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const text2 = msg.text ?? "";
+    const user = await getOrCreateUser(msg.from);
+    const isMember = await checkMembership(userId);
+    if (text2 === "\u{1FA9D} \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u0648\u0635\u0644\u0645 \u06A9\u0646!") {
+      if (!isMember) {
+        await sendForceJoin(chatId);
+        return;
+      }
+      if (!user.gender) {
+        await askGender(chatId);
+        return;
+      }
+      const active2 = await getActiveRandomChat(userId);
+      if (active2) {
+        await bot.sendMessage(chatId, "\u26A0\uFE0F \u0627\u0644\u0627\u0646 \u062F\u0631 \u06CC\u0647 \u06AF\u0641\u062A\u06AF\u0648 \u0647\u0633\u062A\u06CC!\n\u0628\u0631\u0627\u06CC \u0642\u0637\u0639 \u06A9\u0631\u062F\u0646 \u0628\u0646\u0648\u06CC\u0633: \u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647");
+        return;
+      }
+      await setUserState(userId, "waiting_random_pref");
+      await bot.sendMessage(
+        chatId,
+        "\u0628\u0631\u0627\u062A \u0645\u0647\u0645\u0647 \u0645\u062E\u0627\u0637\u0628\u06CC\u062A \u067E\u0633\u0631 \u0628\u0627\u0634\u0647 \u06CC\u0627 \u062F\u062E\u062A\u0631\u061F\n\u0686\u062A \u0634\u0627\u0646\u0633\u06CC \u0631\u0627\u06CC\u06AF\u0627\u0646 \u0645\u06CC\u0628\u0627\u0634\u062F.",
+        {
+          reply_markup: {
+            keyboard: [
+              [{ text: "\u{1F466} \u067E\u0633\u0631 \u0628\u0627\u0634\u0647" }, { text: "\u{1F467} \u062F\u062E\u062A\u0631 \u0628\u0627\u0634\u0647" }],
+              [{ text: "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A" }]
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          }
+        }
+      );
       return;
     }
-    if (pref !== "any") {
-      const freshU = await freshUser(userId);
-      if ((freshU?.coins ?? 0) < GENDER_CHAT_COST) {
-        await setUserState(userId, "idle");
-        await bot.sendMessage(
-          chatId,
-          `\u274C \u0633\u06A9\u0647 \u06A9\u0627\u0641\u06CC \u0646\u062F\u0627\u0631\u06CC!
+    if (["\u{1F466} \u067E\u0633\u0631 \u0628\u0627\u0634\u0647", "\u{1F467} \u062F\u062E\u062A\u0631 \u0628\u0627\u0634\u0647", "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A"].includes(text2) && user.state === "waiting_random_pref") {
+      let pref = "any";
+      if (text2 === "\u{1F466} \u067E\u0633\u0631 \u0628\u0627\u0634\u0647") pref = "male";
+      else if (text2 === "\u{1F467} \u062F\u062E\u062A\u0631 \u0628\u0627\u0634\u0647") pref = "female";
+      const active2 = await getActiveRandomChat(userId);
+      if (active2) {
+        await bot.sendMessage(chatId, "\u26A0\uFE0F \u0627\u0644\u0627\u0646 \u062F\u0631 \u06CC\u0647 \u06AF\u0641\u062A\u06AF\u0648 \u0647\u0633\u062A\u06CC!");
+        return;
+      }
+      if (pref !== "any") {
+        const freshU = await freshUser(userId);
+        if ((freshU?.coins ?? 0) < GENDER_CHAT_COST) {
+          await setUserState(userId, "idle");
+          await bot.sendMessage(
+            chatId,
+            `\u274C \u0633\u06A9\u0647 \u06A9\u0627\u0641\u06CC \u0646\u062F\u0627\u0631\u06CC!
 
 \u0628\u0631\u0627\u06CC \u0627\u0646\u062A\u062E\u0627\u0628 \u062C\u0646\u0633\u06CC\u062A \u0645\u062E\u0627\u0637\u0628 \u0646\u06CC\u0627\u0632 \u0628\u0647 ${GENDER_CHAT_COST} \u0633\u06A9\u0647 \u062F\u0627\u0631\u06CC.
 \u0633\u06A9\u0647 \u0641\u0639\u0644\u06CC \u062A\u0648: ${freshU?.coins ?? 0} \u0633\u06A9\u0647
 
 \u0628\u0631\u0627\u06CC \u06AF\u0631\u0641\u062A\u0646 \u0633\u06A9\u0647 \u0631\u0627\u06CC\u06AF\u0627\u0646\u060C \u0628\u0646\u0631\u062A \u0631\u0648 \u0628\u0647 \u062F\u0648\u0633\u062A\u0627\u062A \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646 \u{1F447}`,
-          {
-            reply_markup: {
-              keyboard: [
-                [{ text: "\u{1F3C6} \u0627\u0641\u0632\u0627\u06CC\u0634 \u0627\u0645\u062A\u06CC\u0627\u0632" }],
-                [{ text: "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A" }]
-              ],
-              resize_keyboard: true
+            {
+              reply_markup: {
+                keyboard: [
+                  [{ text: "\u{1F3C6} \u0627\u0641\u0632\u0627\u06CC\u0634 \u0627\u0645\u062A\u06CC\u0627\u0632" }],
+                  [{ text: "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A" }]
+                ],
+                resize_keyboard: true
+              }
             }
-          }
+          );
+          await setUserState(userId, "waiting_random_pref");
+          return;
+        }
+        await db.update(botUsers).set({ coins: (freshU?.coins ?? 0) - GENDER_CHAT_COST }).where(eq(botUsers.telegramId, userId));
+      }
+      const partner = await findPartner(userId, pref, user.gender ?? "any");
+      if (partner) {
+        await db.delete(waitingQueue).where(eq(waitingQueue.telegramId, partner.telegramId));
+        await db.insert(randomChats).values({ user1TelegramId: userId, user2TelegramId: partner.telegramId });
+        await setUserState(userId, "in_random_chat");
+        await setUserState(partner.telegramId, "in_random_chat");
+        const connMsg = "\u06CC\u0627\u0641\u062A\u0645 \u0648 \u0648\u0635\u0644\u062A\u0648\u0646 \u06A9\u0631\u062F\u0645 \u{1F91C} \u0628\u0627 \u0645\u062E\u0627\u0637\u0628\u062A \u0646\u0627\u0634\u0646\u0627\u0633\u0627\u0646\u0647 \u062D\u0631\u0641 \u0628\u0632\u0646!";
+        await bot.sendMessage(chatId, connMsg, {
+          reply_markup: { keyboard: [[{ text: "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647" }]], resize_keyboard: true }
+        });
+        await bot.sendMessage(partner.telegramId, connMsg, {
+          reply_markup: { keyboard: [[{ text: "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647" }]], resize_keyboard: true }
+        });
+      } else {
+        const alreadyQ = await db.select().from(waitingQueue).where(eq(waitingQueue.telegramId, userId)).limit(1);
+        if (alreadyQ.length === 0) {
+          await db.insert(waitingQueue).values({ telegramId: userId, genderPref: pref });
+        }
+        await setUserState(userId, "waiting_random");
+        await bot.sendMessage(
+          chatId,
+          "\u062F\u0631 \u062D\u0627\u0644 \u0627\u062A\u0635\u0627\u0644...\n\u0627\u06AF\u0631 \u062A\u0627 \u062D\u062F\u0627\u06A9\u062B\u0631 \u06CC\u06A9 \u062F\u0642\u06CC\u0642\u0647 \u0622\u06CC\u0646\u062F\u0647 \u067E\u06CC\u0627\u0645\u06CC \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F \u062F\u0648\u0628\u0627\u0631\u0647 \u062A\u0644\u0627\u0634 \u06A9\u0646\u06CC\u062F",
+          { reply_markup: { keyboard: [[{ text: "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0627\u0646\u0635\u0631\u0627\u0641 \u0645\u06CC\u062F\u0645" }]], resize_keyboard: true } }
         );
-        await setUserState(userId, "waiting_random_pref");
+      }
+      return;
+    }
+    if (text2 === "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0627\u0646\u0635\u0631\u0627\u0641 \u0645\u06CC\u062F\u0645" || text2 === "\u0627\u0646\u0635\u0631\u0627\u0641") {
+      await db.delete(waitingQueue).where(eq(waitingQueue.telegramId, userId));
+      await setUserState(userId, "idle");
+      await bot.sendMessage(chatId, "\u0628\u0627\u0634\u0647! \u0627\u0646\u0635\u0631\u0627\u0641 \u062F\u0627\u062F\u06CC. \u{1F44C}", mainMenu());
+      return;
+    }
+    if (text2 === "\u2764\uFE0F \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644\u0645 \u06A9\u0646!") {
+      if (!isMember) {
+        await sendForceJoin(chatId);
         return;
       }
-      await db.update(botUsers).set({ coins: (freshU?.coins ?? 0) - GENDER_CHAT_COST }).where(eq(botUsers.telegramId, userId));
-    }
-    const partner = await findPartner(userId, pref, user.gender ?? "any");
-    if (partner) {
-      await db.delete(waitingQueue).where(eq(waitingQueue.telegramId, partner.telegramId));
-      await db.insert(randomChats).values({ user1TelegramId: userId, user2TelegramId: partner.telegramId });
-      await setUserState(userId, "in_random_chat");
-      await setUserState(partner.telegramId, "in_random_chat");
-      const connMsg = "\u06CC\u0627\u0641\u062A\u0645 \u0648 \u0648\u0635\u0644\u062A\u0648\u0646 \u06A9\u0631\u062F\u0645 \u{1F91C} \u0628\u0627 \u0645\u062E\u0627\u0637\u0628\u062A \u0646\u0627\u0634\u0646\u0627\u0633\u0627\u0646\u0647 \u062D\u0631\u0641 \u0628\u0632\u0646!";
-      await bot.sendMessage(chatId, connMsg, {
-        reply_markup: { keyboard: [[{ text: "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647" }]], resize_keyboard: true }
-      });
-      await bot.sendMessage(partner.telegramId, connMsg, {
-        reply_markup: { keyboard: [[{ text: "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647" }]], resize_keyboard: true }
-      });
-    } else {
-      const alreadyQ = await db.select().from(waitingQueue).where(eq(waitingQueue.telegramId, userId)).limit(1);
-      if (alreadyQ.length === 0) {
-        await db.insert(waitingQueue).values({ telegramId: userId, genderPref: pref });
+      if (!user.gender) {
+        await askGender(chatId);
+        return;
       }
-      await setUserState(userId, "waiting_random");
+      await setUserState(userId, "waiting_specific");
       await bot.sendMessage(
         chatId,
-        "\u062F\u0631 \u062D\u0627\u0644 \u0627\u062A\u0635\u0627\u0644...\n\u0627\u06AF\u0631 \u062A\u0627 \u062D\u062F\u0627\u06A9\u062B\u0631 \u06CC\u06A9 \u062F\u0642\u06CC\u0642\u0647 \u0622\u06CC\u0646\u062F\u0647 \u067E\u06CC\u0627\u0645\u06CC \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F \u062F\u0648\u0628\u0627\u0631\u0647 \u062A\u0644\u0627\u0634 \u06A9\u0646\u06CC\u062F",
-        { reply_markup: { keyboard: [[{ text: "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0627\u0646\u0635\u0631\u0627\u0641 \u0645\u06CC\u062F\u0645" }]], resize_keyboard: true } }
+        "\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0647 \u0628\u062A\u0648\u0646\u0645 \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u062A \u0628\u0637\u0648\u0631 \u0646\u0627\u0634\u0646\u0627\u0633 \u0648\u0635\u0644\u062A \u06A9\u0646\u0645\u060C \u06CC\u06A9\u06CC \u0627\u0632 \u0627\u06CC\u0646 2 \u06A9\u0627\u0631 \u0631\u0648 \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0647:\n\n\u0631\u0627\u0647 \u0627\u0648\u0644 \u{1F449} : @Username \u06CC\u0627 \u0647\u0645\u0648\u0646 \u0622\u06CC\u062F\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0631\u0648 \u0648\u0627\u0631\u062F \u0631\u0628\u0627\u062A \u06A9\u0646!\n\u0631\u0627\u0647 \u062F\u0648\u0645 \u{1F449} : \u0627\u0644\u0627\u0646 \u06CC\u0647 \u067E\u06CC\u0627\u0645 \u0645\u062A\u0646\u06CC \u0627\u0632 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0628\u0647 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646 \u062A\u0627 \u0628\u0628\u06CC\u0646\u06CC\u0645 \u0639\u0636\u0648 \u0631\u0628\u0627\u062A \u0647\u0633\u062A \u06CC\u0627 \u0646\u0647!"
       );
-    }
-    return;
-  }
-  if (text2 === "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0627\u0646\u0635\u0631\u0627\u0641 \u0645\u06CC\u062F\u0645" || text2 === "\u0627\u0646\u0635\u0631\u0627\u0641") {
-    await db.delete(waitingQueue).where(eq(waitingQueue.telegramId, userId));
-    await setUserState(userId, "idle");
-    await bot.sendMessage(chatId, "\u0628\u0627\u0634\u0647! \u0627\u0646\u0635\u0631\u0627\u0641 \u062F\u0627\u062F\u06CC. \u{1F44C}", mainMenu());
-    return;
-  }
-  if (text2 === "\u2764\uFE0F \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644\u0645 \u06A9\u0646!") {
-    if (!isMember) {
-      await sendForceJoin(chatId);
       return;
     }
-    if (!user.gender) {
-      await askGender(chatId);
+    if (text2 === "\u0644\u06CC\u0646\u06A9 \u0646\u0627\u0634\u0646\u0627\u0633 \u0645\u0646 \u{1F5BC}") {
+      if (!isMember) {
+        await sendForceJoin(chatId);
+        return;
+      }
+      if (!user.gender) {
+        await askGender(chatId);
+        return;
+      }
+      await sendBanner(chatId, user.linkToken, user.coins);
       return;
     }
-    await setUserState(userId, "waiting_specific");
-    await bot.sendMessage(
-      chatId,
-      "\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0647 \u0628\u062A\u0648\u0646\u0645 \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u062A \u0628\u0637\u0648\u0631 \u0646\u0627\u0634\u0646\u0627\u0633 \u0648\u0635\u0644\u062A \u06A9\u0646\u0645\u060C \u06CC\u06A9\u06CC \u0627\u0632 \u0627\u06CC\u0646 2 \u06A9\u0627\u0631 \u0631\u0648 \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0647:\n\n\u0631\u0627\u0647 \u0627\u0648\u0644 \u{1F449} : @Username \u06CC\u0627 \u0647\u0645\u0648\u0646 \u0622\u06CC\u062F\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0631\u0648 \u0648\u0627\u0631\u062F \u0631\u0628\u0627\u062A \u06A9\u0646!\n\u0631\u0627\u0647 \u062F\u0648\u0645 \u{1F449} : \u0627\u0644\u0627\u0646 \u06CC\u0647 \u067E\u06CC\u0627\u0645 \u0645\u062A\u0646\u06CC \u0627\u0632 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0628\u0647 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646 \u062A\u0627 \u0628\u0628\u06CC\u0646\u06CC\u0645 \u0639\u0636\u0648 \u0631\u0628\u0627\u062A \u0647\u0633\u062A \u06CC\u0627 \u0646\u0647!"
-    );
-    return;
-  }
-  if (text2 === "\u0644\u06CC\u0646\u06A9 \u0646\u0627\u0634\u0646\u0627\u0633 \u0645\u0646 \u{1F5BC}") {
-    if (!isMember) {
-      await sendForceJoin(chatId);
+    if (text2 === "\u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0647 \u06AF\u0631\u0648\u0647 \u{1F465}") {
+      if (!isMember) {
+        await sendForceJoin(chatId);
+        return;
+      }
+      await bot.sendMessage(chatId, "\u0628\u0632\u0648\u062F\u06CC... \u{1F51C}", mainMenu());
       return;
     }
-    if (!user.gender) {
-      await askGender(chatId);
-      return;
-    }
-    await sendBanner(chatId, user.linkToken, user.coins);
-    return;
-  }
-  if (text2 === "\u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0647 \u06AF\u0631\u0648\u0647 \u{1F465}") {
-    if (!isMember) {
-      await sendForceJoin(chatId);
-      return;
-    }
-    await bot.sendMessage(chatId, "\u0628\u0632\u0648\u062F\u06CC... \u{1F51C}", mainMenu());
-    return;
-  }
-  if (text2 === "\u{1F3C6} \u0627\u0641\u0632\u0627\u06CC\u0634 \u0627\u0645\u062A\u06CC\u0627\u0632") {
-    if (!isMember) {
-      await sendForceJoin(chatId);
-      return;
-    }
-    const u = await freshUser(userId);
-    const botInfo = await bot.getMe();
-    const link = `https://t.me/${botInfo.username}?start=${u?.linkToken}`;
-    await bot.sendMessage(
-      chatId,
-      `\u0627\u0639\u062A\u0628\u0627\u0631 \u0641\u0639\u0644\u06CC \u0645\u06A9\u0627\u0644\u0645\u0647 \u0634\u0645\u0627 : ${u?.coins ?? 0} \u0633\u06A9\u0647
+    if (text2 === "\u{1F3C6} \u0627\u0641\u0632\u0627\u06CC\u0634 \u0627\u0645\u062A\u06CC\u0627\u0632") {
+      if (!isMember) {
+        await sendForceJoin(chatId);
+        return;
+      }
+      const u = await freshUser(userId);
+      const botInfo = await bot.getMe();
+      const link = `https://t.me/${botInfo.username}?start=${u?.linkToken}`;
+      await bot.sendMessage(
+        chatId,
+        `\u0627\u0639\u062A\u0628\u0627\u0631 \u0641\u0639\u0644\u06CC \u0645\u06A9\u0627\u0644\u0645\u0647 \u0634\u0645\u0627 : ${u?.coins ?? 0} \u0633\u06A9\u0647
 
 \u2753 \u0686\u0637\u0648\u0631 \u0627\u0639\u062A\u0628\u0627\u0631 \u062E\u0648\u062F\u0645\u0648 \u0627\u0641\u0632\u0627\u06CC\u0634 \u0628\u062F\u0645 \u061F
 _____________________
@@ -95626,161 +95659,148 @@ _____________________
 
 \u{1F517} \u0644\u06CC\u0646\u06A9 \u062F\u0639\u0648\u062A \u0645\u0633\u062A\u0642\u06CC\u0645:
 ${link}`,
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "\u{1F4E4} \u0627\u0634\u062A\u0631\u0627\u06A9\u200C\u06AF\u0630\u0627\u0631\u06CC \u0644\u06CC\u0646\u06A9", url: `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("\u0628\u0627 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0627\u0647\u0627\u0645 \u0686\u062A \u06A9\u0646! \u{1F3AD}")}` }
-          ]]
-        }
-      }
-    );
-    return;
-  }
-  if (text2 === "\u0631\u0627\u0647\u0646\u0645\u0627") {
-    await bot.sendMessage(
-      chatId,
-      "\u0631\u0627\u0647\u0646\u0645\u0627 \u{1F50D}\n\n\u0645\u0646 \u0627\u0632 \u0627\u06CC\u0646\u062C\u0627\u0645 \u06A9\u0647 \u06A9\u0645\u06A9\u062A \u06A9\u0646\u0645! \u{1F601}\n\u0628\u0631\u0627\u06CC \u062F\u0631\u06CC\u0627\u0641\u062A \u0631\u0627\u0647\u0646\u0645\u0627\u06CC\u06CC \u062F\u0631 \u0645\u0648\u0631\u062F \u0647\u0631 \u0645\u0648\u0636\u0648\u0639\u060C \u06A9\u0627\u0641\u06CC\u0647 \u062F\u06A9\u0645\u0647 \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0645\u0648\u0631\u062F\u0646\u0638\u0631 \u0631\u0648 \u0644\u0645\u0633 \u06A9\u0646\u06CC \u{1F447}",
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "\u{1F449} \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0686\u06CC\u0647\u061F \u0648 \u0628\u0647 \u0686\u0647 \u062F\u0631\u062F \u0645\u06CC\u062E\u0648\u0631\u0647\u061F", callback_data: "help_about" }],
-            [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0646\u0645\u061F", callback_data: "help_receive" }],
-            [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644 \u0628\u0634\u0645\u061F", callback_data: "help_specific" }],
-            [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \u0648\u0635\u0644 \u0634\u06CC\u0645\u061F", callback_data: "help_random" }]
-          ]
-        }
-      }
-    );
-    return;
-  }
-  if (text2 === "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647") {
-    const active2 = await getActiveRandomChat(userId);
-    if (active2) {
-      await setUserState(userId, "confirm_end_chat", String(active2.id));
-      await bot.sendMessage(
-        chatId,
-        "\u067E\u06CC\u0627\u0645 \u0633\u06CC\u0633\u062A\u0645:\n\u0645\u0637\u0645\u0626\u0646\u06CC \u0645\u06CC\u062E\u0648\u0627\u06CC \u0627\u06CC\u0646 \u06AF\u067E \u0631\u0648 \u0628\u0628\u0646\u062F\u06CC\u061F",
         {
           reply_markup: {
             inline_keyboard: [[
-              { text: "\u0622\u0631\u0647 \u06AF\u067E \u0631\u0648 \u0642\u0637\u0639 \u06A9\u0646", callback_data: "end_chat_yes" },
-              { text: "\u0646\u0647", callback_data: "end_chat_no" }
+              { text: "\u{1F4E4} \u0627\u0634\u062A\u0631\u0627\u06A9\u200C\u06AF\u0630\u0627\u0631\u06CC \u0644\u06CC\u0646\u06A9", url: `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("\u0628\u0627 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0627\u0647\u0627\u0645 \u0686\u062A \u06A9\u0646! \u{1F3AD}")}` }
             ]]
           }
         }
       );
-    } else {
-      await db.delete(waitingQueue).where(eq(waitingQueue.telegramId, userId));
-      await setUserState(userId, "idle");
-      await bot.sendMessage(chatId, "\u062F\u0631 \u06AF\u0641\u062A\u06AF\u0648\u06CC\u06CC \u0646\u06CC\u0633\u062A\u06CC.", mainMenu());
+      return;
     }
-    return;
-  }
-  if (text2 === "\u0622\u0631\u0647 \u0628\u0644\u0627\u06A9\u0634 \u06A9\u0646" && user.state === "ask_block") {
-    await setUserState(userId, "ask_block_reason", user.stateData ?? "");
-    await bot.sendMessage(
-      chatId,
-      "\u067E\u06CC\u0627\u0645 \u0633\u06CC\u0633\u062A\u0645:\n\u0686\u0631\u0627 \u0645\u06CC\u062E\u0648\u0627\u06CC \u0628\u0644\u0627\u06A9\u0634 \u06A9\u0646\u06CC\u061F",
-      {
-        reply_markup: {
-          keyboard: [
-            [{ text: "\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F" }, { text: "\u062C\u0646\u0633\u06CC\u062A\u0634 \u0627\u0634\u062A\u0628\u0627\u0647 \u0628\u0648\u062F" }],
-            [{ text: "\u0628\u0627\u0647\u0627\u0634 \u062D\u0627\u0644 \u0646\u06A9\u0631\u062F\u0645" }, { text: "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F" }],
-            [{ text: "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0628\u0639\u062F\u0627 \u0647\u0645 \u0648\u0635\u0644 \u0634\u0645" }]
-          ],
-          resize_keyboard: true,
-          one_time_keyboard: true
+    if (text2 === "\u0631\u0627\u0647\u0646\u0645\u0627") {
+      await bot.sendMessage(
+        chatId,
+        "\u0631\u0627\u0647\u0646\u0645\u0627 \u{1F50D}\n\n\u0645\u0646 \u0627\u0632 \u0627\u06CC\u0646\u062C\u0627\u0645 \u06A9\u0647 \u06A9\u0645\u06A9\u062A \u06A9\u0646\u0645! \u{1F601}\n\u0628\u0631\u0627\u06CC \u062F\u0631\u06CC\u0627\u0641\u062A \u0631\u0627\u0647\u0646\u0645\u0627\u06CC\u06CC \u062F\u0631 \u0645\u0648\u0631\u062F \u0647\u0631 \u0645\u0648\u0636\u0648\u0639\u060C \u06A9\u0627\u0641\u06CC\u0647 \u062F\u06A9\u0645\u0647 \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0645\u0648\u0631\u062F\u0646\u0638\u0631 \u0631\u0648 \u0644\u0645\u0633 \u06A9\u0646\u06CC \u{1F447}",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "\u{1F449} \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0686\u06CC\u0647\u061F \u0648 \u0628\u0647 \u0686\u0647 \u062F\u0631\u062F \u0645\u06CC\u062E\u0648\u0631\u0647\u061F", callback_data: "help_about" }],
+              [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0646\u0645\u061F", callback_data: "help_receive" }],
+              [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644 \u0628\u0634\u0645\u061F", callback_data: "help_specific" }],
+              [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \u0648\u0635\u0644 \u0634\u06CC\u0645\u061F", callback_data: "help_random" }]
+            ]
+          }
         }
-      }
-    );
-    return;
-  }
-  if (text2 === "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0628\u0639\u062F\u0627 \u0647\u0645 \u0648\u0635\u0644 \u0634\u0645" && (user.state === "ask_block" || user.state === "ask_block_reason")) {
-    await setUserState(userId, "idle");
-    await bot.sendMessage(chatId, "\u062D\u0644\u0647! \u{1F44C}\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
-    return;
-  }
-  if (["\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F", "\u062C\u0646\u0633\u06CC\u062A\u0634 \u0627\u0634\u062A\u0628\u0627\u0647 \u0628\u0648\u062F", "\u0628\u0627\u0647\u0627\u0634 \u062D\u0627\u0644 \u0646\u06A9\u0631\u062F\u0645", "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F"].includes(text2) && user.state === "ask_block_reason") {
-    const stateData = user.stateData ?? "";
-    const [blockToken, partnerIdStr] = stateData.split(":");
-    const reportedId = parseInt(partnerIdStr ?? "0");
-    const reason = text2;
-    if (blockToken) {
-      await db.insert(blockedUsers).values({ blockerTelegramId: userId, blockedToken: blockToken }).onConflictDoNothing();
+      );
+      return;
     }
-    if (reportedId) {
-      await db.insert(reports).values({ reporterTelegramId: userId, reportedToken: blockToken, reason });
-      try {
+    if (text2 === "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647") {
+      const active2 = await getActiveRandomChat(userId);
+      if (active2) {
+        await setUserState(userId, "confirm_end_chat", String(active2.id));
         await bot.sendMessage(
-          reportedId,
-          `\u26A0\uFE0F *\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 \u0633\u06CC\u0633\u062A\u0645:*
+          chatId,
+          "\u067E\u06CC\u0627\u0645 \u0633\u06CC\u0633\u062A\u0645:\n\u0645\u0637\u0645\u0626\u0646\u06CC \u0645\u06CC\u062E\u0648\u0627\u06CC \u0627\u06CC\u0646 \u06AF\u067E \u0631\u0648 \u0628\u0628\u0646\u062F\u06CC\u061F",
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: "\u0622\u0631\u0647 \u06AF\u067E \u0631\u0648 \u0642\u0637\u0639 \u06A9\u0646", callback_data: "end_chat_yes" },
+                { text: "\u0646\u0647", callback_data: "end_chat_no" }
+              ]]
+            }
+          }
+        );
+      } else {
+        await db.delete(waitingQueue).where(eq(waitingQueue.telegramId, userId));
+        await setUserState(userId, "idle");
+        await bot.sendMessage(chatId, "\u062F\u0631 \u06AF\u0641\u062A\u06AF\u0648\u06CC\u06CC \u0646\u06CC\u0633\u062A\u06CC.", mainMenu());
+      }
+      return;
+    }
+    if (text2 === "\u0622\u0631\u0647 \u0628\u0644\u0627\u06A9\u0634 \u06A9\u0646" && user.state === "ask_block") {
+      await setUserState(userId, "ask_block_reason", user.stateData ?? "");
+      await bot.sendMessage(
+        chatId,
+        "\u067E\u06CC\u0627\u0645 \u0633\u06CC\u0633\u062A\u0645:\n\u0686\u0631\u0627 \u0645\u06CC\u062E\u0648\u0627\u06CC \u0628\u0644\u0627\u06A9\u0634 \u06A9\u0646\u06CC\u061F",
+        {
+          reply_markup: {
+            keyboard: [
+              [{ text: "\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F" }, { text: "\u062C\u0646\u0633\u06CC\u062A\u0634 \u0627\u0634\u062A\u0628\u0627\u0647 \u0628\u0648\u062F" }],
+              [{ text: "\u0628\u0627\u0647\u0627\u0634 \u062D\u0627\u0644 \u0646\u06A9\u0631\u062F\u0645" }, { text: "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F" }],
+              [{ text: "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0628\u0639\u062F\u0627 \u0647\u0645 \u0648\u0635\u0644 \u0634\u0645" }]
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          }
+        }
+      );
+      return;
+    }
+    if (text2 === "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0628\u0639\u062F\u0627 \u0647\u0645 \u0648\u0635\u0644 \u0634\u0645" && (user.state === "ask_block" || user.state === "ask_block_reason")) {
+      await setUserState(userId, "idle");
+      await bot.sendMessage(chatId, "\u062D\u0644\u0647! \u{1F44C}\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
+      return;
+    }
+    if (["\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F", "\u062C\u0646\u0633\u06CC\u062A\u0634 \u0627\u0634\u062A\u0628\u0627\u0647 \u0628\u0648\u062F", "\u0628\u0627\u0647\u0627\u0634 \u062D\u0627\u0644 \u0646\u06A9\u0631\u062F\u0645", "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F"].includes(text2) && user.state === "ask_block_reason") {
+      const stateData = user.stateData ?? "";
+      const [blockToken, partnerIdStr] = stateData.split(":");
+      const reportedId = parseInt(partnerIdStr ?? "0");
+      const reason = text2;
+      if (blockToken) {
+        await db.insert(blockedUsers).values({ blockerTelegramId: userId, blockedToken: blockToken }).onConflictDoNothing();
+      }
+      if (reportedId) {
+        await db.insert(reports).values({ reporterTelegramId: userId, reportedToken: blockToken, reason });
+        try {
+          await bot.sendMessage(
+            reportedId,
+            `\u26A0\uFE0F *\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 \u0633\u06CC\u0633\u062A\u0645:*
 \u0634\u0645\u0627 \u062A\u0648\u0633\u0637 \u06CC\u06A9\u06CC \u0627\u0632 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u06AF\u0632\u0627\u0631\u0634 \u0634\u062F\u06CC\u062F.
 \u{1F4CC} \u062F\u0644\u06CC\u0644: *${reason}*
 
 \u0644\u0637\u0641\u0627\u064B \u0631\u0639\u0627\u06CC\u062A \u0642\u0648\u0627\u0646\u06CC\u0646 \u0631\u0627 \u0628\u06A9\u0646\u06CC\u062F.`,
-          { parse_mode: "Markdown" }
-        );
-      } catch {
+            { parse_mode: "Markdown" }
+          );
+        } catch {
+        }
       }
-    }
-    await setUserState(userId, "idle");
-    await bot.sendMessage(chatId, "\u062D\u0644\u0647!\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
-    return;
-  }
-  if (["\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F", "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F", "\u0627\u0646\u0635\u0631\u0627\u0641"].includes(text2) && user.state === "report_reason") {
-    const stateData = user.stateData ?? "";
-    const [reportedToken] = stateData.split(":");
-    await setUserState(userId, "idle");
-    if (text2 === "\u0627\u0646\u0635\u0631\u0627\u0641") {
-      await bot.sendMessage(chatId, "\u0628\u0627\u0634\u0647! \u{1F44C}", mainMenu());
+      await setUserState(userId, "idle");
+      await bot.sendMessage(chatId, "\u062D\u0644\u0647!\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
       return;
     }
-    const reason = text2;
-    const reportedUser = await getUserByToken(reportedToken);
-    await db.insert(reports).values({ reporterTelegramId: userId, reportedToken, reason });
-    if (reportedUser) {
-      try {
-        await bot.sendMessage(
-          reportedUser.telegramId,
-          `\u26A0\uFE0F *\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 \u0633\u06CC\u0633\u062A\u0645:*
+    if (["\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F", "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F", "\u0627\u0646\u0635\u0631\u0627\u0641"].includes(text2) && user.state === "report_reason") {
+      const stateData = user.stateData ?? "";
+      const [reportedToken] = stateData.split(":");
+      await setUserState(userId, "idle");
+      if (text2 === "\u0627\u0646\u0635\u0631\u0627\u0641") {
+        await bot.sendMessage(chatId, "\u0628\u0627\u0634\u0647! \u{1F44C}", mainMenu());
+        return;
+      }
+      const reason = text2;
+      const reportedUser = await getUserByToken(reportedToken);
+      await db.insert(reports).values({ reporterTelegramId: userId, reportedToken, reason });
+      if (reportedUser) {
+        try {
+          await bot.sendMessage(
+            reportedUser.telegramId,
+            `\u26A0\uFE0F *\u0627\u0637\u0644\u0627\u0639\u06CC\u0647 \u0633\u06CC\u0633\u062A\u0645:*
 \u0634\u0645\u0627 \u062A\u0648\u0633\u0637 \u06CC\u06A9\u06CC \u0627\u0632 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u06AF\u0632\u0627\u0631\u0634 \u0634\u062F\u06CC\u062F.
 \u{1F4CC} \u062F\u0644\u06CC\u0644: *${reason}*`,
-          { parse_mode: "Markdown" }
-        );
-      } catch {
+            { parse_mode: "Markdown" }
+          );
+        } catch {
+        }
       }
-    }
-    await bot.sendMessage(chatId, "\u2705 \u06AF\u0632\u0627\u0631\u0634 \u062B\u0628\u062A \u0634\u062F.", mainMenu());
-    return;
-  }
-  const active = await getActiveRandomChat(userId);
-  if (active) {
-    const partnerId = active.user1TelegramId === userId ? active.user2TelegramId : active.user1TelegramId;
-    if (msg.sticker) await bot.sendSticker(partnerId, msg.sticker.file_id);
-    else if (msg.photo) await bot.sendPhoto(partnerId, msg.photo[msg.photo.length - 1].file_id, { caption: msg.caption });
-    else if (msg.voice) await bot.sendVoice(partnerId, msg.voice.file_id);
-    else if (msg.video) await bot.sendVideo(partnerId, msg.video.file_id, { caption: msg.caption });
-    else if (msg.animation) await bot.sendAnimation(partnerId, msg.animation.file_id);
-    else if (msg.document) await bot.sendDocument(partnerId, msg.document.file_id);
-    else if (text2) await bot.sendMessage(partnerId, text2);
-    return;
-  }
-  if (user.state === "waiting_specific") {
-    if (msg.forward_from) {
-      const target = await db.select().from(botUsers).where(eq(botUsers.telegramId, msg.forward_from.id)).limit(1);
-      if (target.length > 0) {
-        await setUserState(userId, "pending_anon_msg", String(target[0].telegramId));
-        await bot.sendMessage(chatId, "\u2705 \u0645\u062E\u0627\u0637\u0628 \u067E\u06CC\u062F\u0627 \u0634\u062F! \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
-      } else {
-        await bot.sendMessage(chatId, "\u274C \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0647\u0646\u0648\u0632 \u0639\u0636\u0648 \u0631\u0628\u0627\u062A \u0646\u06CC\u0633\u062A.");
-        await setUserState(userId, "idle");
-      }
+      await bot.sendMessage(chatId, "\u2705 \u06AF\u0632\u0627\u0631\u0634 \u062B\u0628\u062A \u0634\u062F.", mainMenu());
       return;
     }
-    if (text2) {
-      const mention = text2.match(/^@(\w+)$/);
-      if (mention) {
-        const target = await db.select().from(botUsers).where(eq(botUsers.username, mention[1])).limit(1);
+    const active = await getActiveRandomChat(userId);
+    if (active) {
+      const partnerId = active.user1TelegramId === userId ? active.user2TelegramId : active.user1TelegramId;
+      if (msg.sticker) await bot.sendSticker(partnerId, msg.sticker.file_id);
+      else if (msg.photo) await bot.sendPhoto(partnerId, msg.photo[msg.photo.length - 1].file_id, { caption: msg.caption });
+      else if (msg.voice) await bot.sendVoice(partnerId, msg.voice.file_id);
+      else if (msg.video) await bot.sendVideo(partnerId, msg.video.file_id, { caption: msg.caption });
+      else if (msg.animation) await bot.sendAnimation(partnerId, msg.animation.file_id);
+      else if (msg.document) await bot.sendDocument(partnerId, msg.document.file_id);
+      else if (text2) await bot.sendMessage(partnerId, text2);
+      return;
+    }
+    if (user.state === "waiting_specific") {
+      if (msg.forward_from) {
+        const target = await db.select().from(botUsers).where(eq(botUsers.telegramId, msg.forward_from.id)).limit(1);
         if (target.length > 0) {
           await setUserState(userId, "pending_anon_msg", String(target[0].telegramId));
           await bot.sendMessage(chatId, "\u2705 \u0645\u062E\u0627\u0637\u0628 \u067E\u06CC\u062F\u0627 \u0634\u062F! \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
@@ -95790,72 +95810,88 @@ ${link}`,
         }
         return;
       }
-      await bot.sendMessage(chatId, "\u0644\u0637\u0641\u0627\u064B @Username \u0645\u062E\u0627\u0637\u0628 \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F \u06CC\u0627 \u06CC\u0647 \u067E\u06CC\u0627\u0645 \u0627\u0632 \u0627\u06CC\u0634\u0648\u0646 \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F.");
-    }
-    return;
-  }
-  if (user.state === "pending_anon_msg" && user.stateData && text2) {
-    const recipientId = parseInt(user.stateData);
-    const blocked = await db.select().from(blockedUsers).where(
-      and(eq(blockedUsers.blockerTelegramId, recipientId), eq(blockedUsers.blockedToken, user.linkToken))
-    ).limit(1);
-    if (blocked.length > 0) {
-      await bot.sendMessage(chatId, "\u274C \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0634\u0645\u0627 \u0631\u0627 \u0645\u0633\u062F\u0648\u062F \u06A9\u0631\u062F\u0647 \u0627\u0633\u062A.");
-      await setUserState(userId, "idle");
+      if (text2) {
+        const mention = text2.match(/^@(\w+)$/);
+        if (mention) {
+          const target = await db.select().from(botUsers).where(eq(botUsers.username, mention[1])).limit(1);
+          if (target.length > 0) {
+            await setUserState(userId, "pending_anon_msg", String(target[0].telegramId));
+            await bot.sendMessage(chatId, "\u2705 \u0645\u062E\u0627\u0637\u0628 \u067E\u06CC\u062F\u0627 \u0634\u062F! \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
+          } else {
+            await bot.sendMessage(chatId, "\u274C \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0647\u0646\u0648\u0632 \u0639\u0636\u0648 \u0631\u0628\u0627\u062A \u0646\u06CC\u0633\u062A.");
+            await setUserState(userId, "idle");
+          }
+          return;
+        }
+        await bot.sendMessage(chatId, "\u0644\u0637\u0641\u0627\u064B @Username \u0645\u062E\u0627\u0637\u0628 \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F \u06CC\u0627 \u06CC\u0647 \u067E\u06CC\u0627\u0645 \u0627\u0632 \u0627\u06CC\u0634\u0648\u0646 \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646\u06CC\u062F.");
+      }
       return;
     }
-    await bot.sendMessage(
-      recipientId,
-      `\u{1F4E9} *\u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062C\u062F\u06CC\u062F:*
+    if (user.state === "pending_anon_msg" && user.stateData && text2) {
+      const recipientId = parseInt(user.stateData);
+      const blocked = await db.select().from(blockedUsers).where(
+        and(eq(blockedUsers.blockerTelegramId, recipientId), eq(blockedUsers.blockedToken, user.linkToken))
+      ).limit(1);
+      if (blocked.length > 0) {
+        await bot.sendMessage(chatId, "\u274C \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0634\u0645\u0627 \u0631\u0627 \u0645\u0633\u062F\u0648\u062F \u06A9\u0631\u062F\u0647 \u0627\u0633\u062A.");
+        await setUserState(userId, "idle");
+        return;
+      }
+      await bot.sendMessage(
+        recipientId,
+        `\u{1F4E9} *\u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062C\u062F\u06CC\u062F:*
 
 ${text2}`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "\u21A9\uFE0F \u067E\u0627\u0633\u062E \u0646\u0627\u0634\u0646\u0627\u0633", callback_data: `reply:${userId}` },
-            { text: "\u{1F6AB} \u0628\u0644\u0627\u06A9", callback_data: `block:${user.linkToken}` }
-          ]]
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "\u21A9\uFE0F \u067E\u0627\u0633\u062E \u0646\u0627\u0634\u0646\u0627\u0633", callback_data: `reply:${userId}` },
+              { text: "\u{1F6AB} \u0628\u0644\u0627\u06A9", callback_data: `block:${user.linkToken}` }
+            ]]
+          }
         }
-      }
-    );
-    await setUserState(userId, "idle");
-    await bot.sendMessage(chatId, "\u2705 \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u0634\u0645\u0627 \u0627\u0631\u0633\u0627\u0644 \u0634\u062F!", mainMenu());
-    return;
-  }
-  if (await isAdmin(userId, msg.from.username)) {
-    if (user.state === "admin_broadcast" && text2) {
+      );
       await setUserState(userId, "idle");
-      await doBroadcast(chatId, text2);
+      await bot.sendMessage(chatId, "\u2705 \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u0634\u0645\u0627 \u0627\u0631\u0633\u0627\u0644 \u0634\u062F!", mainMenu());
       return;
     }
-    if (user.state === "admin_add_channel" && text2) {
-      const raw = text2.replace("@", "").trim();
-      const channels = await getChannels();
-      if (!channels.find((c) => c.username === raw)) {
-        channels.push({ username: raw, url: `https://t.me/${raw}` });
+    if (await isAdmin(userId, msg.from.username)) {
+      if (user.state === "admin_broadcast" && text2) {
+        await setUserState(userId, "idle");
+        await doBroadcast(chatId, text2);
+        return;
+      }
+      if (user.state === "admin_add_channel" && text2) {
+        const raw = text2.replace("@", "").trim();
+        const channels = await getChannels();
+        if (!channels.find((c) => c.username === raw)) {
+          channels.push({ username: raw, url: `https://t.me/${raw}` });
+          await db.insert(botSettings).values({ key: "channels", value: JSON.stringify(channels) }).onConflictDoUpdate({ target: botSettings.key, set: { value: JSON.stringify(channels), updatedAt: /* @__PURE__ */ new Date() } });
+        }
+        await setUserState(userId, "idle");
+        await bot.sendMessage(chatId, `\u2705 \u06A9\u0627\u0646\u0627\u0644 @${raw} \u0627\u0636\u0627\u0641\u0647 \u0634\u062F.
+\u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644:
+${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`);
+        return;
+      }
+      if (user.state === "admin_remove_channel" && text2) {
+        const raw = text2.replace("@", "").trim();
+        let channels = await getChannels();
+        channels = channels.filter((c) => c.username !== raw);
         await db.insert(botSettings).values({ key: "channels", value: JSON.stringify(channels) }).onConflictDoUpdate({ target: botSettings.key, set: { value: JSON.stringify(channels), updatedAt: /* @__PURE__ */ new Date() } });
+        await setUserState(userId, "idle");
+        await bot.sendMessage(chatId, `\u2705 \u06A9\u0627\u0646\u0627\u0644 @${raw} \u062D\u0630\u0641 \u0634\u062F.
+\u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644:
+${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`);
+        return;
       }
-      await setUserState(userId, "idle");
-      await bot.sendMessage(chatId, `\u2705 \u06A9\u0627\u0646\u0627\u0644 @${raw} \u0627\u0636\u0627\u0641\u0647 \u0634\u062F.
-\u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644:
-${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`);
-      return;
     }
-    if (user.state === "admin_remove_channel" && text2) {
-      const raw = text2.replace("@", "").trim();
-      let channels = await getChannels();
-      channels = channels.filter((c) => c.username !== raw);
-      await db.insert(botSettings).values({ key: "channels", value: JSON.stringify(channels) }).onConflictDoUpdate({ target: botSettings.key, set: { value: JSON.stringify(channels), updatedAt: /* @__PURE__ */ new Date() } });
-      await setUserState(userId, "idle");
-      await bot.sendMessage(chatId, `\u2705 \u06A9\u0627\u0646\u0627\u0644 @${raw} \u062D\u0630\u0641 \u0634\u062F.
-\u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644:
-${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`);
-      return;
+    if (text2) {
+      await bot.sendMessage(chatId, "\u062D\u0644\u0647!\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
     }
-  }
-  if (text2) {
-    await bot.sendMessage(chatId, "\u062D\u0644\u0647!\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
+  } catch (err) {
+    logger.error({ err }, "message handler error");
   }
 });
 async function findPartner(userId, pref, userGender) {
@@ -95874,222 +95910,226 @@ async function findPartner(userId, pref, userGender) {
 }
 bot.on("callback_query", async (query) => {
   if (!query.data || !query.from) return;
-  const chatId = query.message.chat.id;
-  const userId = query.from.id;
-  await bot.answerCallbackQuery(query.id);
-  if (query.data === "check_join") {
-    const isMember = await checkMembership(userId);
-    if (isMember) {
-      let u = await freshUser(userId);
-      if (!u) {
-        u = await getOrCreateUser(query.from);
-      }
-      if (u.referredBy && !u.referralCoinAwarded) {
-        const referrer = await freshUser(u.referredBy);
-        if (referrer) {
-          await db.update(botUsers).set({ coins: referrer.coins + REFERRAL_COINS }).where(eq(botUsers.telegramId, referrer.telegramId));
-          await db.update(botUsers).set({ referralCoinAwarded: true }).where(eq(botUsers.telegramId, userId));
-          try {
-            await bot.sendMessage(
-              referrer.telegramId,
-              `\u{1F389} \u06CC\u0647 \u0646\u0641\u0631 \u0627\u0632 \u0637\u0631\u06CC\u0642 \u0644\u06CC\u0646\u06A9 \u062F\u0639\u0648\u062A \u062A\u0648 \u0648\u0627\u0631\u062F \u0634\u062F!
+  try {
+    const chatId = query.message.chat.id;
+    const userId = query.from.id;
+    await bot.answerCallbackQuery(query.id);
+    if (query.data === "check_join") {
+      const isMember = await checkMembership(userId);
+      if (isMember) {
+        let u = await freshUser(userId);
+        if (!u) {
+          u = await getOrCreateUser(query.from);
+        }
+        if (u.referredBy && !u.referralCoinAwarded) {
+          const referrer = await freshUser(u.referredBy);
+          if (referrer) {
+            await db.update(botUsers).set({ coins: referrer.coins + REFERRAL_COINS }).where(eq(botUsers.telegramId, referrer.telegramId));
+            await db.update(botUsers).set({ referralCoinAwarded: true }).where(eq(botUsers.telegramId, userId));
+            try {
+              await bot.sendMessage(
+                referrer.telegramId,
+                `\u{1F389} \u06CC\u0647 \u0646\u0641\u0631 \u0627\u0632 \u0637\u0631\u06CC\u0642 \u0644\u06CC\u0646\u06A9 \u062F\u0639\u0648\u062A \u062A\u0648 \u0648\u0627\u0631\u062F \u0634\u062F!
 \u{1FA99} ${REFERRAL_COINS} \u0633\u06A9\u0647 \u0628\u0647 \u062D\u0633\u0627\u0628\u062A \u0627\u0636\u0627\u0641\u0647 \u0634\u062F!`
-            );
-          } catch {
+              );
+            } catch {
+            }
           }
         }
-      }
-      if (!u.gender) {
-        await askGender(chatId);
+        if (!u.gender) {
+          await askGender(chatId);
+        } else {
+          await bot.sendMessage(chatId, "\u0631\u0628\u0627\u062A \u0628\u0631\u0627\u06CC \u0634\u0645\u0627 \u0641\u0639\u0627\u0644 \u0634\u062F.\n\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
+        }
       } else {
-        await bot.sendMessage(chatId, "\u0631\u0628\u0627\u062A \u0628\u0631\u0627\u06CC \u0634\u0645\u0627 \u0641\u0639\u0627\u0644 \u0634\u062F.\n\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
+        await bot.answerCallbackQuery(query.id, { text: "\u274C \u0647\u0646\u0648\u0632 \u0639\u0636\u0648 \u0646\u0634\u062F\u06CC! \u0627\u0648\u0644 \u0639\u0636\u0648 \u06A9\u0627\u0646\u0627\u0644 \u0634\u0648 \u{1F447}", show_alert: true });
+        await sendForceJoin(chatId);
       }
-    } else {
-      await bot.answerCallbackQuery(query.id, { text: "\u274C \u0647\u0646\u0648\u0632 \u0639\u0636\u0648 \u0646\u0634\u062F\u06CC! \u0627\u0648\u0644 \u0639\u0636\u0648 \u06A9\u0627\u0646\u0627\u0644 \u0634\u0648 \u{1F447}", show_alert: true });
-      await sendForceJoin(chatId);
+      return;
     }
-    return;
-  }
-  if (query.data.startsWith("set_gender:")) {
-    const gender = query.data.split(":")[1];
-    await db.update(botUsers).set({ gender }).where(eq(botUsers.telegramId, userId));
-    const label = gender === "female" ? "\u{1F467} \u062F\u062E\u062A\u0631" : "\u{1F466} \u067E\u0633\u0631";
-    await bot.sendMessage(chatId, `\u2705 \u062C\u0646\u0633\u06CC\u062A \u0634\u0645\u0627 ${label} \u062B\u0628\u062A \u0634\u062F!`);
-    const u = await freshUser(userId);
-    if (u) await bot.sendMessage(chatId, "\u0631\u0628\u0627\u062A \u0628\u0631\u0627\u06CC \u0634\u0645\u0627 \u0641\u0639\u0627\u0644 \u0634\u062F.\n\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
-    return;
-  }
-  if (query.data === "end_chat_yes") {
-    const active = await getActiveRandomChat(userId);
-    if (active) {
-      const partnerId = active.user1TelegramId === userId ? active.user2TelegramId : active.user1TelegramId;
-      const partnerUser = await freshUser(partnerId);
-      await db.update(randomChats).set({ isActive: false }).where(eq(randomChats.id, active.id));
-      await setUserState(userId, "ask_block", `${partnerUser?.linkToken ?? ""}:${partnerId}`);
-      await setUserState(partnerId, "idle");
+    if (query.data.startsWith("set_gender:")) {
+      const gender = query.data.split(":")[1];
+      await db.update(botUsers).set({ gender }).where(eq(botUsers.telegramId, userId));
+      const label = gender === "female" ? "\u{1F467} \u062F\u062E\u062A\u0631" : "\u{1F466} \u067E\u0633\u0631";
+      await bot.sendMessage(chatId, `\u2705 \u062C\u0646\u0633\u06CC\u062A \u0634\u0645\u0627 ${label} \u062B\u0628\u062A \u0634\u062F!`);
+      const u = await freshUser(userId);
+      if (u) await bot.sendMessage(chatId, "\u0631\u0628\u0627\u062A \u0628\u0631\u0627\u06CC \u0634\u0645\u0627 \u0641\u0639\u0627\u0644 \u0634\u062F.\n\n\u0686\u0647 \u06A9\u0627\u0631\u06CC \u0628\u0631\u0627\u062A \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0645\u061F", mainMenu());
+      return;
+    }
+    if (query.data === "end_chat_yes") {
+      const active = await getActiveRandomChat(userId);
+      if (active) {
+        const partnerId = active.user1TelegramId === userId ? active.user2TelegramId : active.user1TelegramId;
+        const partnerUser = await freshUser(partnerId);
+        await db.update(randomChats).set({ isActive: false }).where(eq(randomChats.id, active.id));
+        await setUserState(userId, "ask_block", `${partnerUser?.linkToken ?? ""}:${partnerId}`);
+        await setUserState(partnerId, "idle");
+        await bot.sendMessage(
+          chatId,
+          "\u067E\u06CC\u0627\u0645 \u0633\u06CC\u0633\u062A\u0645:\n\u0627\u06CC\u0646 \u06AF\u067E \u0628\u0633\u062A\u0647 \u0634\u062F! \u0646\u06CC\u0627\u0632 \u062F\u0627\u0631\u06CC \u0627\u06CC\u0646 \u0645\u062E\u0627\u0637\u0628 \u0631\u0648 \u0628\u0644\u0627\u06A9 \u06A9\u0646\u0645 \u06A9\u0647 \u062F\u06CC\u06AF\u0647 \u0628\u0647\u062A \u0645\u062A\u0635\u0644 \u0646\u0634\u0647\u061F",
+          {
+            reply_markup: {
+              keyboard: [
+                [{ text: "\u0622\u0631\u0647 \u0628\u0644\u0627\u06A9\u0634 \u06A9\u0646" }, { text: "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0628\u0639\u062F\u0627 \u0647\u0645 \u0648\u0635\u0644 \u0634\u0645" }]
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true
+            }
+          }
+        );
+        try {
+          await bot.sendMessage(
+            partnerId,
+            "\u{1F534} \u0637\u0631\u0641 \u0645\u0642\u0627\u0628\u0644 \u06AF\u0641\u062A\u06AF\u0648 \u0631\u0627 \u0642\u0637\u0639 \u06A9\u0631\u062F.",
+            {
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: "\u{1F6A8} \u06AF\u0632\u0627\u0631\u0634", callback_data: `report_ask:${(await freshUser(userId))?.linkToken ?? ""}:${userId}` }
+                ]]
+              }
+            }
+          );
+        } catch {
+        }
+      }
+      return;
+    }
+    if (query.data === "end_chat_no") {
+      await setUserState(userId, "in_random_chat");
       await bot.sendMessage(
         chatId,
-        "\u067E\u06CC\u0627\u0645 \u0633\u06CC\u0633\u062A\u0645:\n\u0627\u06CC\u0646 \u06AF\u067E \u0628\u0633\u062A\u0647 \u0634\u062F! \u0646\u06CC\u0627\u0632 \u062F\u0627\u0631\u06CC \u0627\u06CC\u0646 \u0645\u062E\u0627\u0637\u0628 \u0631\u0648 \u0628\u0644\u0627\u06A9 \u06A9\u0646\u0645 \u06A9\u0647 \u062F\u06CC\u06AF\u0647 \u0628\u0647\u062A \u0645\u062A\u0635\u0644 \u0646\u0634\u0647\u061F",
+        "\u2705 \u06AF\u0641\u062A\u06AF\u0648 \u0627\u062F\u0627\u0645\u0647 \u062F\u0627\u0631\u062F.",
+        { reply_markup: { keyboard: [[{ text: "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647" }]], resize_keyboard: true } }
+      );
+      return;
+    }
+    if (query.data.startsWith("report_ask:")) {
+      const parts = query.data.split(":");
+      const blockToken = parts[1];
+      const reportedId = parseInt(parts[2] ?? "0");
+      await setUserState(userId, "report_reason", `${blockToken}:${reportedId}`);
+      await bot.sendMessage(
+        chatId,
+        "\u{1F6A8} \u062F\u0644\u06CC\u0644 \u06AF\u0632\u0627\u0631\u0634 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:",
         {
           reply_markup: {
             keyboard: [
-              [{ text: "\u0622\u0631\u0647 \u0628\u0644\u0627\u06A9\u0634 \u06A9\u0646" }, { text: "\u0628\u06CC\u062E\u06CC\u0627\u0644\u060C \u0628\u0639\u062F\u0627 \u0647\u0645 \u0648\u0635\u0644 \u0634\u0645" }]
+              [{ text: "\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F" }, { text: "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F" }],
+              [{ text: "\u0627\u0646\u0635\u0631\u0627\u0641" }]
             ],
             resize_keyboard: true,
             one_time_keyboard: true
           }
         }
       );
-      try {
-        await bot.sendMessage(
-          partnerId,
-          "\u{1F534} \u0637\u0631\u0641 \u0645\u0642\u0627\u0628\u0644 \u06AF\u0641\u062A\u06AF\u0648 \u0631\u0627 \u0642\u0637\u0639 \u06A9\u0631\u062F.",
-          {
-            reply_markup: {
-              inline_keyboard: [[
-                { text: "\u{1F6A8} \u06AF\u0632\u0627\u0631\u0634", callback_data: `report_ask:${(await freshUser(userId))?.linkToken ?? ""}:${userId}` }
-              ]]
-            }
-          }
-        );
-      } catch {
-      }
+      return;
     }
-    return;
-  }
-  if (query.data === "end_chat_no") {
-    await setUserState(userId, "in_random_chat");
-    await bot.sendMessage(
-      chatId,
-      "\u2705 \u06AF\u0641\u062A\u06AF\u0648 \u0627\u062F\u0627\u0645\u0647 \u062F\u0627\u0631\u062F.",
-      { reply_markup: { keyboard: [[{ text: "\u0642\u0637\u0639 \u0645\u06A9\u0627\u0644\u0645\u0647" }]], resize_keyboard: true } }
-    );
-    return;
-  }
-  if (query.data.startsWith("report_ask:")) {
-    const parts = query.data.split(":");
-    const blockToken = parts[1];
-    const reportedId = parseInt(parts[2] ?? "0");
-    await setUserState(userId, "report_reason", `${blockToken}:${reportedId}`);
-    await bot.sendMessage(
-      chatId,
-      "\u{1F6A8} \u062F\u0644\u06CC\u0644 \u06AF\u0632\u0627\u0631\u0634 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646\u06CC\u062F:",
-      {
-        reply_markup: {
-          keyboard: [
-            [{ text: "\u0628\u06CC \u0627\u062F\u0628 \u0628\u0648\u062F" }, { text: "\u062A\u0628\u0644\u06CC\u063A \u0641\u0631\u0633\u062A\u0627\u062F" }],
-            [{ text: "\u0627\u0646\u0635\u0631\u0627\u0641" }]
-          ],
-          resize_keyboard: true,
-          one_time_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-  if (query.data.startsWith("reply:")) {
-    const targetId = parseInt(query.data.split(":")[1]);
-    await setUserState(userId, "pending_anon_msg", String(targetId));
-    await bot.sendMessage(chatId, "\u2709\uFE0F \u067E\u06CC\u0627\u0645 \u067E\u0627\u0633\u062E \u0646\u0627\u0634\u0646\u0627\u0633 \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
-    return;
-  }
-  if (query.data.startsWith("block:")) {
-    const blockToken = query.data.split(":")[1];
-    await db.insert(blockedUsers).values({ blockerTelegramId: userId, blockedToken: blockToken }).onConflictDoNothing();
-    await bot.sendMessage(chatId, "\u{1F6AB} \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0645\u0633\u062F\u0648\u062F \u0634\u062F.");
-    return;
-  }
-  if (query.data === "admin_broadcast" && await isAdmin(userId, query.from.username)) {
-    await setUserState(userId, "admin_broadcast");
-    await bot.sendMessage(chatId, "\u{1F4E2} \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
-    return;
-  }
-  if (query.data === "admin_add_channel" && await isAdmin(userId, query.from.username)) {
-    await setUserState(userId, "admin_add_channel");
-    await bot.sendMessage(chatId, "\u{1F4E2} \u0622\u06CC\u062F\u06CC \u06A9\u0627\u0646\u0627\u0644 \u062C\u062F\u06CC\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F (\u0645\u062B\u0644\u0627\u064B @mychannel \u06CC\u0627 mychannel):");
-    return;
-  }
-  if (query.data === "admin_remove_channel" && await isAdmin(userId, query.from.username)) {
-    const channels = await getChannels();
-    await setUserState(userId, "admin_remove_channel");
-    await bot.sendMessage(
-      chatId,
-      `\u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644:
+    if (query.data.startsWith("reply:")) {
+      const targetId = parseInt(query.data.split(":")[1]);
+      await setUserState(userId, "pending_anon_msg", String(targetId));
+      await bot.sendMessage(chatId, "\u2709\uFE0F \u067E\u06CC\u0627\u0645 \u067E\u0627\u0633\u062E \u0646\u0627\u0634\u0646\u0627\u0633 \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
+      return;
+    }
+    if (query.data.startsWith("block:")) {
+      const blockToken = query.data.split(":")[1];
+      await db.insert(blockedUsers).values({ blockerTelegramId: userId, blockedToken: blockToken }).onConflictDoNothing();
+      await bot.sendMessage(chatId, "\u{1F6AB} \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631 \u0645\u0633\u062F\u0648\u062F \u0634\u062F.");
+      return;
+    }
+    if (query.data === "admin_broadcast" && await isAdmin(userId, query.from.username)) {
+      await setUserState(userId, "admin_broadcast");
+      await bot.sendMessage(chatId, "\u{1F4E2} \u067E\u06CC\u0627\u0645 \u0647\u0645\u06AF\u0627\u0646\u06CC \u062E\u0648\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F:");
+      return;
+    }
+    if (query.data === "admin_add_channel" && await isAdmin(userId, query.from.username)) {
+      await setUserState(userId, "admin_add_channel");
+      await bot.sendMessage(chatId, "\u{1F4E2} \u0622\u06CC\u062F\u06CC \u06A9\u0627\u0646\u0627\u0644 \u062C\u062F\u06CC\u062F \u0631\u0627 \u0628\u0646\u0648\u06CC\u0633\u06CC\u062F (\u0645\u062B\u0644\u0627\u064B @mychannel \u06CC\u0627 mychannel):");
+      return;
+    }
+    if (query.data === "admin_remove_channel" && await isAdmin(userId, query.from.username)) {
+      const channels = await getChannels();
+      await setUserState(userId, "admin_remove_channel");
+      await bot.sendMessage(
+        chatId,
+        `\u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u0641\u0639\u0627\u0644:
 ${channels.map((c) => `\u2022 @${c.username}`).join("\n")}
 
 \u0622\u06CC\u062F\u06CC \u06A9\u0627\u0646\u0627\u0644\u06CC \u06A9\u0647 \u0645\u06CC\u062E\u0648\u0627\u06CC \u062D\u0630\u0641 \u0628\u0634\u0647 \u0631\u0648 \u0628\u0646\u0648\u06CC\u0633:`
-    );
-    return;
-  }
-  if (query.data === "admin_stats" && await isAdmin(userId, query.from.username)) {
-    const all = await db.select().from(botUsers);
-    const totalReports = await db.select().from(reports);
-    const channels = await getChannels();
-    await bot.sendMessage(
-      chatId,
-      `\u{1F4CA} *\u0622\u0645\u0627\u0631 \u0631\u0628\u0627\u062A*
+      );
+      return;
+    }
+    if (query.data === "admin_stats" && await isAdmin(userId, query.from.username)) {
+      const all = await db.select().from(botUsers);
+      const totalReports = await db.select().from(reports);
+      const channels = await getChannels();
+      await bot.sendMessage(
+        chatId,
+        `\u{1F4CA} *\u0622\u0645\u0627\u0631 \u0631\u0628\u0627\u062A*
 
 \u{1F465} \u06A9\u0644 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646: *${all.length}*
 \u{1F6A8} \u06AF\u0632\u0627\u0631\u0634\u200C\u0647\u0627: *${totalReports.length}*
 \u{1F4E2} \u06A9\u0627\u0646\u0627\u0644\u200C\u0647\u0627\u06CC \u062C\u0648\u06CC\u0646 \u0627\u062C\u0628\u0627\u0631\u06CC:
 ${channels.map((c) => `\u2022 @${c.username}`).join("\n")}`,
-      { parse_mode: "Markdown" }
-    );
-    return;
-  }
-  const helpBack = {
-    reply_markup: {
-      inline_keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0635\u0641\u062D\u0647 \u0631\u0627\u0647\u0646\u0645\u0627", callback_data: "help_back" }]]
+        { parse_mode: "Markdown" }
+      );
+      return;
     }
-  };
-  if (query.data === "help_about") {
-    await bot.sendMessage(
-      chatId,
-      "\u{1F449} \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0686\u06CC\u0647\u061F \u0648 \u0628\u0647 \u0686\u0647 \u062F\u0631\u062F \u0645\u06CC\u062E\u0648\u0631\u0647\u061F\n\n\xBB \u0628\u0631\u0646\u0627\u0645\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \xAB \u0645\u062D\u0628\u0648\u0628\u200C\u062A\u0631\u06CC\u0646 \u0648 \u06A9\u0627\u0645\u0644\u200C\u062A\u0631\u06CC\u0646 \u0631\u0628\u0627\u062A \u062A\u0644\u06AF\u0631\u0627\u0645 \u{1F499}\n\n\u{1F539} \u0647\u0631 \u0648\u0642\u062A \u062D\u0648\u0635\u0644\u062A \u0633\u0631 \u0631\u0641\u062A \u0628\u0635\u0648\u0631\u062A \u062A\u0635\u0627\u062F\u0641\u06CC \u0628\u0647 \u06CC\u06A9 \u0646\u0641\u0631 \u0648\u0635\u0644 \u0628\u0634\u06CC \u0648 \u0628\u0627\u0647\u0627\u0634 \u0646\u0627\u0634\u0646\u0627\u0633 \u06AF\u067E \u0628\u0632\u0646\u06CC!\n\n\u{1F539} \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u062F\u0648\u0633\u062A\u0627\u062A \u0627\u062C\u0627\u0632\u0647 \u0628\u062F\u06CC \u0647\u0631 \u062D\u0631\u0641 \u06CC\u0627 \u0627\u0646\u062A\u0642\u0627\u062F\u06CC \u06A9\u0647 \u062A\u0648 \u062F\u0644\u0634\u0648\u0646 \u0645\u0648\u0646\u062F\u0647 \u0631\u0648 \u0628\u0635\u0648\u0631\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0647\u062A \u0628\u06AF\u0646!\n\n\u{1F539} \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u06AF\u0631\u0648\u0647\u200C\u0647\u0627\u06CC\u06CC \u06A9\u0647 \u062A\u0648\u0634\u0648\u0646 \u0647\u0633\u062A\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0641\u0631\u0633\u062A\u06CC!\n\n\u{1F539} \u062C\u0630\u0627\u0628\u200C\u062A\u0631\u06CC\u0646: \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u062A \u0628\u0635\u0648\u0631\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u067E\u06CC\u0627\u0645 \u0628\u0641\u0631\u0633\u062A\u06CC \u{1F44C}",
-      helpBack
-    );
-    return;
-  }
-  if (query.data === "help_receive") {
-    await bot.sendMessage(
-      chatId,
-      "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0646\u0645\u061F\n\n\u0628\u0631\u0627\u06CC \u062F\u0631\u06CC\u0627\u0641\u062A \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u06A9\u0627\u0641\u06CC\u0647 \u062F\u0633\u062A\u0648\u0631 \u{1F448} /link \u0631\u0648 \u0644\u0645\u0633 \u06A9\u0646\u06CC \u062A\u0627 \u0644\u06CC\u0646\u06A9 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC\u062A \u0628\u0631\u0627\u062A \u0627\u0631\u0633\u0627\u0644 \u0628\u0634\u0647. \u0628\u0627 \u0641\u0631\u0633\u062A\u0627\u062F\u0646 \u0627\u06CC\u0646 \u0644\u06CC\u0646\u06A9 \u0628\u0647 \u062F\u0648\u0633\u062A\u0627\u062A \u0648 \u06AF\u0631\u0648\u0647\u200C\u0647\u0627 \u06CC\u0627 \u0628\u0627 \u06AF\u0630\u0627\u0634\u062A\u0646 \u0622\u0646 \u062F\u0631 \u0634\u0628\u06A9\u0647\u200C\u0647\u0627\u06CC \u0627\u062C\u062A\u0645\u0627\u0639\u06CC \u0645\u062B\u0644 \u0641\u06CC\u0633\u0628\u0648\u06A9 \u0648 \u062A\u0648\u0626\u06CC\u062A\u060C \u0645\u06CC\u062A\u0648\u0646\u0646 \u062A\u0648 \u062F\u0644\u0634\u0648\u0646\u0647 \u0631\u0648 \u0628\u0647 \u0635\u0648\u0631\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0647\u062A \u0628\u0632\u0646\u0646. \u06CC\u06A9 \u0645\u062A\u0646 \u067E\u06CC\u0634\u0641\u0631\u0636 \u0647\u0645\u0631\u0627\u0647 \u0644\u06CC\u0646\u06A9 \u0628\u0647\u062A \u0641\u0631\u0633\u062A\u0627\u062F\u0647 \u0645\u06CC\u0634\u0647\u060C \u0627\u0644\u0628\u062A\u0647 \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u062F\u0644\u062E\u0648\u0627\u0647 \u062E\u0648\u062F\u062A \u0647\u0645 \u062A\u063A\u06CC\u06CC\u0631\u0634 \u0628\u062F\u06CC!",
-      helpBack
-    );
-    return;
-  }
-  if (query.data === "help_specific") {
-    await bot.sendMessage(
-      chatId,
-      "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644 \u0628\u0634\u0645\u061F\n\n\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0647 \u0628\u062A\u0648\u0646\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u062A \u0628\u0637\u0648\u0631 \u0646\u0627\u0634\u0646\u0627\u0633 \u0648\u0635\u0644 \u0628\u0634\u06CC \u0628\u0627\u06CC\u062F \u06CC\u06A9\u06CC \u0627\u0632 \u0627\u06CC\u0646 2 \u06A9\u0627\u0631 \u0631\u0648 \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0647:\n\n\u0631\u0627\u0647 \u0627\u0648\u0644 \u{1F449} : @Username \u06CC\u0627 \u0647\u0645\u0648\u0646 \u0622\u06CC\u062F\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0631\u0648 \u0648\u0627\u0631\u062F \u0631\u0628\u0627\u062A \u06A9\u0646!\n\u0631\u0627\u0647 \u062F\u0648\u0645 \u{1F449} : \u0627\u0644\u0627\u0646 \u06CC\u0647 \u067E\u06CC\u0627\u0645 \u0645\u062A\u0646\u06CC \u0627\u0632 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0628\u0647 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646 \u062A\u0627 \u0628\u0628\u06CC\u0646\u06CC\u0645 \u0639\u0636\u0648 \u0628\u0631\u0646\u0627\u0645\u0647 \u0647\u0633\u062A \u06CC\u0627 \u0646\u0647! \u0648 \u062E\u06CC\u0644\u06CC \u0631\u0627\u062D\u062A \u0628\u0647\u0634\u0648\u0646 \u067E\u06CC\u0627\u0645 \u0628\u0641\u0631\u0633\u062A\u06CC \u0648 \u062D\u0631\u0641 \u062F\u0644\u062A\u0648 \u0628\u06AF\u06CC! \u{1F60E}",
-      helpBack
-    );
-    return;
-  }
-  if (query.data === "help_random") {
-    await bot.sendMessage(
-      chatId,
-      "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \u0648\u0635\u0644 \u0634\u06CC\u0645\u061F\n\n\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0627\u0631 \u06A9\u0627\u0641\u06CC\u0647 \u0631\u0648\u06CC \u062F\u06A9\u0645\u0647 \xAB \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \xBB \u06A9\u0644\u06CC\u06A9 \u06A9\u0646\u06CC \u062A\u0627 \u0628\u0635\u0648\u0631\u062A \u0634\u0627\u0646\u0633\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0641\u0631 \u0648\u0635\u0644 \u0628\u0634\u06CC \u0648 \u0628\u0627\u0647\u0627\u0634 \u06AF\u067E \u0628\u0632\u0646\u06CC!",
-      helpBack
-    );
-    return;
-  }
-  if (query.data === "help_back") {
-    await bot.sendMessage(
-      chatId,
-      "\u0631\u0627\u0647\u0646\u0645\u0627 \u{1F50D}\n\n\u0645\u0646 \u0627\u0632 \u0627\u06CC\u0646\u062C\u0627\u0645 \u06A9\u0647 \u06A9\u0645\u06A9\u062A \u06A9\u0646\u0645! \u{1F601}\n\u0628\u0631\u0627\u06CC \u062F\u0631\u06CC\u0627\u0641\u062A \u0631\u0627\u0647\u0646\u0645\u0627\u06CC\u06CC \u062F\u0631 \u0645\u0648\u0631\u062F \u0647\u0631 \u0645\u0648\u0636\u0648\u0639\u060C \u06A9\u0627\u0641\u06CC\u0647 \u062F\u06A9\u0645\u0647 \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0645\u0648\u0631\u062F\u0646\u0638\u0631 \u0631\u0648 \u0644\u0645\u0633 \u06A9\u0646\u06CC \u{1F447}",
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "\u{1F449} \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0686\u06CC\u0647\u061F \u0648 \u0628\u0647 \u0686\u0647 \u062F\u0631\u062F \u0645\u06CC\u062E\u0648\u0631\u0647\u061F", callback_data: "help_about" }],
-            [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0646\u0645\u061F", callback_data: "help_receive" }],
-            [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644 \u0628\u0634\u0645\u061F", callback_data: "help_specific" }],
-            [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \u0648\u0635\u0644 \u0634\u06CC\u0645\u061F", callback_data: "help_random" }]
-          ]
-        }
+    const helpBack = {
+      reply_markup: {
+        inline_keyboard: [[{ text: "\u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0635\u0641\u062D\u0647 \u0631\u0627\u0647\u0646\u0645\u0627", callback_data: "help_back" }]]
       }
-    );
-    return;
+    };
+    if (query.data === "help_about") {
+      await bot.sendMessage(
+        chatId,
+        "\u{1F449} \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0686\u06CC\u0647\u061F \u0648 \u0628\u0647 \u0686\u0647 \u062F\u0631\u062F \u0645\u06CC\u062E\u0648\u0631\u0647\u061F\n\n\xBB \u0628\u0631\u0646\u0627\u0645\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \xAB \u0645\u062D\u0628\u0648\u0628\u200C\u062A\u0631\u06CC\u0646 \u0648 \u06A9\u0627\u0645\u0644\u200C\u062A\u0631\u06CC\u0646 \u0631\u0628\u0627\u062A \u062A\u0644\u06AF\u0631\u0627\u0645 \u{1F499}\n\n\u{1F539} \u0647\u0631 \u0648\u0642\u062A \u062D\u0648\u0635\u0644\u062A \u0633\u0631 \u0631\u0641\u062A \u0628\u0635\u0648\u0631\u062A \u062A\u0635\u0627\u062F\u0641\u06CC \u0628\u0647 \u06CC\u06A9 \u0646\u0641\u0631 \u0648\u0635\u0644 \u0628\u0634\u06CC \u0648 \u0628\u0627\u0647\u0627\u0634 \u0646\u0627\u0634\u0646\u0627\u0633 \u06AF\u067E \u0628\u0632\u0646\u06CC!\n\n\u{1F539} \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u062F\u0648\u0633\u062A\u0627\u062A \u0627\u062C\u0627\u0632\u0647 \u0628\u062F\u06CC \u0647\u0631 \u062D\u0631\u0641 \u06CC\u0627 \u0627\u0646\u062A\u0642\u0627\u062F\u06CC \u06A9\u0647 \u062A\u0648 \u062F\u0644\u0634\u0648\u0646 \u0645\u0648\u0646\u062F\u0647 \u0631\u0648 \u0628\u0635\u0648\u0631\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0647\u062A \u0628\u06AF\u0646!\n\n\u{1F539} \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u06AF\u0631\u0648\u0647\u200C\u0647\u0627\u06CC\u06CC \u06A9\u0647 \u062A\u0648\u0634\u0648\u0646 \u0647\u0633\u062A\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0641\u0631\u0633\u062A\u06CC!\n\n\u{1F539} \u062C\u0630\u0627\u0628\u200C\u062A\u0631\u06CC\u0646: \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u062A \u0628\u0635\u0648\u0631\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u067E\u06CC\u0627\u0645 \u0628\u0641\u0631\u0633\u062A\u06CC \u{1F44C}",
+        helpBack
+      );
+      return;
+    }
+    if (query.data === "help_receive") {
+      await bot.sendMessage(
+        chatId,
+        "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0646\u0645\u061F\n\n\u0628\u0631\u0627\u06CC \u062F\u0631\u06CC\u0627\u0641\u062A \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u06A9\u0627\u0641\u06CC\u0647 \u062F\u0633\u062A\u0648\u0631 \u{1F448} /link \u0631\u0648 \u0644\u0645\u0633 \u06A9\u0646\u06CC \u062A\u0627 \u0644\u06CC\u0646\u06A9 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC\u062A \u0628\u0631\u0627\u062A \u0627\u0631\u0633\u0627\u0644 \u0628\u0634\u0647. \u0628\u0627 \u0641\u0631\u0633\u062A\u0627\u062F\u0646 \u0627\u06CC\u0646 \u0644\u06CC\u0646\u06A9 \u0628\u0647 \u062F\u0648\u0633\u062A\u0627\u062A \u0648 \u06AF\u0631\u0648\u0647\u200C\u0647\u0627 \u06CC\u0627 \u0628\u0627 \u06AF\u0630\u0627\u0634\u062A\u0646 \u0622\u0646 \u062F\u0631 \u0634\u0628\u06A9\u0647\u200C\u0647\u0627\u06CC \u0627\u062C\u062A\u0645\u0627\u0639\u06CC \u0645\u062B\u0644 \u0641\u06CC\u0633\u0628\u0648\u06A9 \u0648 \u062A\u0648\u0626\u06CC\u062A\u060C \u0645\u06CC\u062A\u0648\u0646\u0646 \u062A\u0648 \u062F\u0644\u0634\u0648\u0646\u0647 \u0631\u0648 \u0628\u0647 \u0635\u0648\u0631\u062A \u0646\u0627\u0634\u0646\u0627\u0633 \u0628\u0647\u062A \u0628\u0632\u0646\u0646. \u06CC\u06A9 \u0645\u062A\u0646 \u067E\u06CC\u0634\u0641\u0631\u0636 \u0647\u0645\u0631\u0627\u0647 \u0644\u06CC\u0646\u06A9 \u0628\u0647\u062A \u0641\u0631\u0633\u062A\u0627\u062F\u0647 \u0645\u06CC\u0634\u0647\u060C \u0627\u0644\u0628\u062A\u0647 \u0645\u06CC\u062A\u0648\u0646\u06CC \u0628\u0647 \u062F\u0644\u062E\u0648\u0627\u0647 \u062E\u0648\u062F\u062A \u0647\u0645 \u062A\u063A\u06CC\u06CC\u0631\u0634 \u0628\u062F\u06CC!",
+        helpBack
+      );
+      return;
+    }
+    if (query.data === "help_specific") {
+      await bot.sendMessage(
+        chatId,
+        "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644 \u0628\u0634\u0645\u061F\n\n\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0647 \u0628\u062A\u0648\u0646\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u062A \u0628\u0637\u0648\u0631 \u0646\u0627\u0634\u0646\u0627\u0633 \u0648\u0635\u0644 \u0628\u0634\u06CC \u0628\u0627\u06CC\u062F \u06CC\u06A9\u06CC \u0627\u0632 \u0627\u06CC\u0646 2 \u06A9\u0627\u0631 \u0631\u0648 \u0627\u0646\u062C\u0627\u0645 \u0628\u062F\u0647:\n\n\u0631\u0627\u0647 \u0627\u0648\u0644 \u{1F449} : @Username \u06CC\u0627 \u0647\u0645\u0648\u0646 \u0622\u06CC\u062F\u06CC \u062A\u0644\u06AF\u0631\u0627\u0645 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0631\u0648 \u0648\u0627\u0631\u062F \u0631\u0628\u0627\u062A \u06A9\u0646!\n\u0631\u0627\u0647 \u062F\u0648\u0645 \u{1F449} : \u0627\u0644\u0627\u0646 \u06CC\u0647 \u067E\u06CC\u0627\u0645 \u0645\u062A\u0646\u06CC \u0627\u0632 \u0627\u0648\u0646 \u0634\u062E\u0635 \u0628\u0647 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0641\u0648\u0631\u0648\u0627\u0631\u062F \u06A9\u0646 \u062A\u0627 \u0628\u0628\u06CC\u0646\u06CC\u0645 \u0639\u0636\u0648 \u0628\u0631\u0646\u0627\u0645\u0647 \u0647\u0633\u062A \u06CC\u0627 \u0646\u0647! \u0648 \u062E\u06CC\u0644\u06CC \u0631\u0627\u062D\u062A \u0628\u0647\u0634\u0648\u0646 \u067E\u06CC\u0627\u0645 \u0628\u0641\u0631\u0633\u062A\u06CC \u0648 \u062D\u0631\u0641 \u062F\u0644\u062A\u0648 \u0628\u06AF\u06CC! \u{1F60E}",
+        helpBack
+      );
+      return;
+    }
+    if (query.data === "help_random") {
+      await bot.sendMessage(
+        chatId,
+        "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \u0648\u0635\u0644 \u0634\u06CC\u0645\u061F\n\n\u0628\u0631\u0627\u06CC \u0627\u06CC\u0646\u06A9\u0627\u0631 \u06A9\u0627\u0641\u06CC\u0647 \u0631\u0648\u06CC \u062F\u06A9\u0645\u0647 \xAB \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \xBB \u06A9\u0644\u06CC\u06A9 \u06A9\u0646\u06CC \u062A\u0627 \u0628\u0635\u0648\u0631\u062A \u0634\u0627\u0646\u0633\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0641\u0631 \u0648\u0635\u0644 \u0628\u0634\u06CC \u0648 \u0628\u0627\u0647\u0627\u0634 \u06AF\u067E \u0628\u0632\u0646\u06CC!",
+        helpBack
+      );
+      return;
+    }
+    if (query.data === "help_back") {
+      await bot.sendMessage(
+        chatId,
+        "\u0631\u0627\u0647\u0646\u0645\u0627 \u{1F50D}\n\n\u0645\u0646 \u0627\u0632 \u0627\u06CC\u0646\u062C\u0627\u0645 \u06A9\u0647 \u06A9\u0645\u06A9\u062A \u06A9\u0646\u0645! \u{1F601}\n\u0628\u0631\u0627\u06CC \u062F\u0631\u06CC\u0627\u0641\u062A \u0631\u0627\u0647\u0646\u0645\u0627\u06CC\u06CC \u062F\u0631 \u0645\u0648\u0631\u062F \u0647\u0631 \u0645\u0648\u0636\u0648\u0639\u060C \u06A9\u0627\u0641\u06CC\u0647 \u062F\u06A9\u0645\u0647 \u0634\u06CC\u0634\u0647\u200C\u0627\u06CC \u0645\u0648\u0631\u062F\u0646\u0638\u0631 \u0631\u0648 \u0644\u0645\u0633 \u06A9\u0646\u06CC \u{1F447}",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "\u{1F449} \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0686\u06CC\u0647\u061F \u0648 \u0628\u0647 \u0686\u0647 \u062F\u0631\u062F \u0645\u06CC\u062E\u0648\u0631\u0647\u061F", callback_data: "help_about" }],
+              [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u067E\u06CC\u0627\u0645 \u0646\u0627\u0634\u0646\u0627\u0633 \u062F\u0631\u06CC\u0627\u0641\u062A \u06A9\u0646\u0645\u061F", callback_data: "help_receive" }],
+              [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u0645\u062E\u0627\u0637\u0628 \u062E\u0627\u0635\u0645 \u0648\u0635\u0644 \u0628\u0634\u0645\u061F", callback_data: "help_specific" }],
+              [{ text: "\u{1F449} \u0686\u0637\u0648\u0631\u06CC \u0628\u0647 \u06CC\u0647 \u0646\u0627\u0634\u0646\u0627\u0633 \u062A\u0635\u0627\u062F\u0641\u06CC \u0648\u0635\u0644 \u0634\u06CC\u0645\u061F", callback_data: "help_random" }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+  } catch (err) {
+    logger.error({ err }, "callback_query handler error");
   }
 });
 async function setupWebhook() {
