@@ -80840,8 +80840,8 @@ var require_pg_connection_string = __commonJS({
       }
       return config;
     }
-    function toConnectionOptions(sslConfig) {
-      const connectionOptions = Object.entries(sslConfig).reduce((c, [key, value]) => {
+    function toConnectionOptions(sslConfig2) {
+      const connectionOptions = Object.entries(sslConfig2).reduce((c, [key, value]) => {
         if (value !== void 0 && value !== null) {
           c[key] = value;
         }
@@ -80852,12 +80852,12 @@ var require_pg_connection_string = __commonJS({
     function toClientConfig(config) {
       const poolConfig = Object.entries(config).reduce((c, [key, value]) => {
         if (key === "ssl") {
-          const sslConfig = value;
-          if (typeof sslConfig === "boolean") {
-            c[key] = sslConfig;
+          const sslConfig2 = value;
+          if (typeof sslConfig2 === "boolean") {
+            c[key] = sslConfig2;
           }
-          if (typeof sslConfig === "object") {
-            c[key] = toConnectionOptions(sslConfig);
+          if (typeof sslConfig2 === "object") {
+            c[key] = toConnectionOptions(sslConfig2);
           }
         } else if (value !== void 0 && value !== null) {
           if (key === "port") {
@@ -95177,7 +95177,11 @@ if (!process.env.DATABASE_URL) {
     "DATABASE_URL must be set. Did you forget to provision a database?"
   );
 }
-var pool = new Pool3({ connectionString: process.env.DATABASE_URL });
+var sslConfig = process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false;
+var pool = new Pool3({
+  connectionString: process.env.DATABASE_URL,
+  ssl: sslConfig
+});
 var db = drizzle(pool, { schema: schema_exports });
 
 // src/bot/index.ts
