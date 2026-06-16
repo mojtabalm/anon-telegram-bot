@@ -24,4 +24,14 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
   setupWebhook().catch((e) => logger.error({ e }, "Webhook setup failed"));
+
+  // Keep-alive: ping self every 4 minutes so Replit doesn't sleep
+  const domains = process.env["REPLIT_DOMAINS"];
+  if (domains) {
+    const selfUrl = `https://${domains.split(",")[0]}/api/healthz`;
+    setInterval(() => {
+      fetch(selfUrl).catch(() => {});
+    }, 4 * 60 * 1000);
+    logger.info({ selfUrl }, "Keep-alive ping started");
+  }
 });
