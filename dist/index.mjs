@@ -96249,6 +96249,15 @@ app_default.listen(port, (err) => {
   }
   logger.info({ port }, "Server listening");
   setupWebhook().catch((e) => logger.error({ e }, "Webhook setup failed"));
+  const domains = process.env["REPLIT_DOMAINS"];
+  if (domains) {
+    const selfUrl = `https://${domains.split(",")[0]}/api/healthz`;
+    setInterval(() => {
+      fetch(selfUrl).catch(() => {
+      });
+    }, 4 * 60 * 1e3);
+    logger.info({ selfUrl }, "Keep-alive ping started");
+  }
 });
 /*! Bundled license information:
 
